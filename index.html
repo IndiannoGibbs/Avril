@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>A.V.R.I.L — Audio Reactive UI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css" />
+    <!-- Preload core scripts to speed up startup when files are local -->
+    <link rel="preload" href="src/libs/three.min.js" as="script">
+    <link rel="preload" href="src/libs/OrbitControls.js" as="script">
+    <link rel="preload" href="./src/main.js" as="script">
+  </head>
+  <body>
+    <div class="app-frame">
+      <header class="brand">
+        <span class="brand-mark">A.V.R.I.L</span>
+        <span class="brand-status" id="brandStatus">Initializing…</span>
+      </header>
+
+      <main class="viewport">
+        <div class="hud">
+          <div class="hud-card">
+            <span class="label">Status</span>
+            <span class="value" id="micStatus">Calibrating</span>
+          </div>
+          <div class="hud-card meter">
+            <span class="label">Signal</span>
+            <div class="meter-track">
+              <div class="meter-bar" id="signalBar"></div>
+            </div>
+          </div>
+          <div class="hud-card" id="alarmIndicator" hidden>
+            <span class="label">Alarm</span>
+            <span class="value" id="alarmTimeDisplay">--:-- --</span>
+          </div>
+        </div>
+
+        <div id="orbWrap">
+          <div id="orbCanvas"></div>
+          <div class="ring ring-1"></div>
+          <div class="ring ring-2"></div>
+          <div id="centerText">A.V.R.I.L</div>
+        </div>
+
+        <div class="voice-viz">
+          <span id="listeningStatus" class="listening-status"></span>
+          <div id="responseDisplay" class="response-display" hidden>
+            <span id="responseText" class="response-text"></span>
+          </div>
+          <div class="voice-bars">
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+            <span class="voice-bar"></span>
+          </div>
+        </div>
+      </main>
+
+      <div id="ui">
+        <button id="startBtn" class="mic idle" aria-label="Start microphone" title="Start microphone">
+          <!-- Microphone SVG icon -->
+          <svg id="micIcon" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M12 14C13.6569 14 15 12.6569 15 11V5C15 3.34315 13.6569 2 12 2C10.3431 2 9 3.34315 9 5V11C9 12.6569 10.3431 14 12 14Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M19 11C19 14.3137 16.3137 17 13 17H11C7.68629 17 5 14.3137 5 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M12 17V21" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span class="mic-label">Mic</span>
+        </button>
+        <div class="settings">
+          <button id="settingsBtn" class="settings-btn" type="button" aria-haspopup="true" aria-expanded="false">
+            Settings
+          </button>
+        </div>
+      </div>
+      <div id="settingsPanel" class="settings-panel" hidden>
+        <button id="closeSettingsBtn" class="close-settings-btn" type="button" aria-label="Close settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <label class="range">
+          <span>Sensitivity</span>
+          <input id="sensitivity" type="range" min="0" max="4" step="0.01" value="1" />
+        </label>
+        <label class="range">
+          <span>Speak time every</span>
+          <select id="timeIntervalSelect">
+            <option value="1">1 minute (default)</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">60 minutes</option>
+          </select>
+        </label>
+        <aside class="command-list" aria-label="Voice command list">
+          <div class="command-list-title">Commands</div>
+          <ul class="command-list-items">
+            <li><span class="kw">Hello</span> — wake A.V.R.I.L</li>
+            <li><span class="kw">What time is it?</span></li>
+            <li><span class="kw">What is the date today?</span></li>
+            <li><span class="kw">What is the weather in &lt;city&gt;?</span></li>
+            <li><span class="kw">Set alarm for &lt;time&gt;</span> — set an alarm (e.g., "set alarm for 7:30 AM")</li>
+            <li><span class="kw">Stop alarm</span> — stop the alarm</li>
+            <li><span class="kw">Cancel alarm</span> — cancel/delete the alarm</li>
+            <li><span class="kw">Snooze</span> — snooze alarm for 5 minutes</li>
+            <li><span class="kw">Show commands</span> — open command list</li>
+            <li><span class="kw">Close command list</span> — close command list</li>
+            <li><span class="kw">Command list</span> — hear commands</li>
+          </ul>
+          <div class="command-create">
+            <div class="command-create-title">Add command</div>
+            <label class="command-field">
+              <span>Command phrase</span>
+              <input id="customCommandPhrase" type="text" placeholder='e.g. "lights on"' />
+            </label>
+            <label class="command-field">
+              <span>Command response</span>
+              <textarea id="customCommandResponse" rows="2" placeholder='e.g. "Turning the lights on."' ></textarea>
+            </label>
+            <button id="addCommandBtn" type="button">Save</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div id="sleepScreen" class="sleep-screen" hidden>
+      <div class="sleep-clock">
+        <div class="clock-time" id="sleepTime">00:00</div>
+        <div class="clock-date" id="sleepDate">Monday, 1 January</div>
+      </div>
+    </div>
+
+    <div id="onScreenKeyboard" class="on-screen-keyboard" hidden>
+      <div class="keyboard-container">
+        <div class="keyboard-row">
+          <button class="keyboard-key" data-key="q">Q</button>
+          <button class="keyboard-key" data-key="w">W</button>
+          <button class="keyboard-key" data-key="e">E</button>
+          <button class="keyboard-key" data-key="r">R</button>
+          <button class="keyboard-key" data-key="t">T</button>
+          <button class="keyboard-key" data-key="y">Y</button>
+          <button class="keyboard-key" data-key="u">U</button>
+          <button class="keyboard-key" data-key="i">I</button>
+          <button class="keyboard-key" data-key="o">O</button>
+          <button class="keyboard-key" data-key="p">P</button>
+        </div>
+        <div class="keyboard-row">
+          <button class="keyboard-key" data-key="a">A</button>
+          <button class="keyboard-key" data-key="s">S</button>
+          <button class="keyboard-key" data-key="d">D</button>
+          <button class="keyboard-key" data-key="f">F</button>
+          <button class="keyboard-key" data-key="g">G</button>
+          <button class="keyboard-key" data-key="h">H</button>
+          <button class="keyboard-key" data-key="j">J</button>
+          <button class="keyboard-key" data-key="k">K</button>
+          <button class="keyboard-key" data-key="l">L</button>
+        </div>
+        <div class="keyboard-row">
+          <button class="keyboard-key keyboard-key-wide" data-key="shift">Shift</button>
+          <button class="keyboard-key" data-key="z">Z</button>
+          <button class="keyboard-key" data-key="x">X</button>
+          <button class="keyboard-key" data-key="c">C</button>
+          <button class="keyboard-key" data-key="v">V</button>
+          <button class="keyboard-key" data-key="b">B</button>
+          <button class="keyboard-key" data-key="n">N</button>
+          <button class="keyboard-key" data-key="m">M</button>
+          <button class="keyboard-key keyboard-key-wide" data-key="backspace">⌫</button>
+        </div>
+        <div class="keyboard-row">
+          <button class="keyboard-key" data-key="1">1</button>
+          <button class="keyboard-key" data-key="2">2</button>
+          <button class="keyboard-key" data-key="3">3</button>
+          <button class="keyboard-key" data-key="4">4</button>
+          <button class="keyboard-key" data-key="5">5</button>
+          <button class="keyboard-key" data-key="6">6</button>
+          <button class="keyboard-key" data-key="7">7</button>
+          <button class="keyboard-key" data-key="8">8</button>
+          <button class="keyboard-key" data-key="9">9</button>
+          <button class="keyboard-key" data-key="0">0</button>
+        </div>
+        <div class="keyboard-row">
+          <button class="keyboard-key" data-key=" ">Space</button>
+          <button class="keyboard-key" data-key=".">.</button>
+          <button class="keyboard-key" data-key=",">,</button>
+          <button class="keyboard-key" data-key="!">!</button>
+          <button class="keyboard-key" data-key="?">?</button>
+          <button class="keyboard-key" data-key="'">'</button>
+          <button class="keyboard-key" data-key='"'>"</button>
+          <button class="keyboard-key keyboard-key-wide" data-key="enter">Enter</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Prefer local Three.js / OrbitControls when available, fall back to CDN.
+      (function () {
+        function loadScript(src, options) {
+          return new Promise((resolve) => {
+            const s = document.createElement('script');
+            s.src = src;
+            if (options && options.type) s.type = options.type;
+            s.onload = () => resolve(true);
+            s.onerror = () => resolve(false);
+            document.head.appendChild(s);
+          });
+        }
+
+        async function loadThreeStack() {
+          if (window.THREE) return true;
+
+          // Try local copies first (fast for demos/offline)
+          const localThreeOk = await loadScript('src/libs/three.min.js');
+          if (localThreeOk && window.THREE) {
+            await loadScript('src/libs/OrbitControls.js');
+            return true;
+          }
+
+          // Fall back to CDN if local files are missing
+          const cdnThreeOk = await loadScript('https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js');
+          if (!cdnThreeOk || !window.THREE) return false;
+          await loadScript('https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js');
+          return true;
+        }
+
+        (async function bootstrap() {
+          const ok = await loadThreeStack();
+          if (!ok) {
+            console.error('Failed to load Three.js — AVRIL visuals will be disabled.');
+            return;
+          }
+          // Load main module after Three.js is ready
+          const mainScriptLoaded = await loadScript('./src/main.js', { type: 'module' });
+          if (!mainScriptLoaded) {
+            console.error('Failed to load main AVRIL script.');
+          }
+        })();
+      })();
+    </script>
+  </body>
+</html>
