@@ -1,4 +1,4 @@
-# JARVIS Orb — Audio Reactive UI
+# A.V.R.I.L Orb — Audio Reactive UI
 
 This is a minimal web UI that renders a 3D "orb" which reacts to live microphone audio using Three.js and the Web Audio API. It's intended as a visual frontend for a future virtual assistant.
 
