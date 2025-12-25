@@ -8,6 +8,7 @@ let sessionActive = false;
 let expectImmediateCommand = false;
 let isSpeaking = false;
 let micMutedForCommand = false;
+let micMuted = false; // Track if microphone is muted
 let recognitionPausedForSpeech = false;
 let lastCommandHandledAt = 0;
 let lastCommandKey = '';
@@ -23,9 +24,11 @@ const jokeBank = [
 ];
 let amp = 0;
 let signalBarEl, micStatusEl, brandStatusEl;
-let ringOuterEl, ringInnerEl;
+// Rings removed - no longer used
 let voiceBars = [];
 let listeningStatusEl;
+let mouseX = 0, mouseY = 0;
+let mouseIntensity = 0; // Mouse hover intensity for deformation
 let sleepScreenEl, sleepTimeEl, sleepDateEl;
 let alarmIndicatorEl, alarmTimeDisplayEl;
 let idleTimer = null;
@@ -43,6 +46,7 @@ let onScreenKeyboardEl = null;
 let activeInputEl = null;
 let keyboardShiftActive = false;
 let keyboardKeyClicked = false; // Flag to prevent hide when key is clicked
+let chimeCooldown = false; // Prevent chime spam on rapid restarts
 
 // Simple UI chimes to signal listening state / session changes.
 // Approximate a small bell using a few short, decaying partials.
@@ -120,8 +124,7 @@ async function init(){
   signalBarEl = document.getElementById('signalBar');
   micStatusEl = document.getElementById('micStatus');
   brandStatusEl = document.getElementById('brandStatus');
-  ringOuterEl = document.querySelector('.ring-1');
-  ringInnerEl = document.querySelector('.ring-2');
+  // Rings removed - no longer needed
   listeningStatusEl = document.getElementById('listeningStatus');
   voiceBars = Array.from(document.querySelectorAll('.voice-bar'));
   sleepScreenEl = document.getElementById('sleepScreen');
@@ -219,38 +222,326 @@ async function init(){
   uniforms = {
     uTime: { value: 0 },
     uAmp: { value: 0 },
+    uMouseIntensity: { value: 0 }, // Mouse hover intensity for deformation
     uColor: { value: new THREE.Color(0x66ccff) },
     uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
   };
 
-  // Geometry + Materials
-  const geo = new THREE.IcosahedronGeometry(1.6, 6);
+  // The Grid Look: Wireframe material with high segment count
+  const geo = new THREE.IcosahedronGeometry(1.6, 8); // Very high segment count for dense grid
 
-  const mat = new THREE.ShaderMaterial({
+  // Main wireframe mesh - organic teal gradient with glowing effect
+  const meshMat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: vertexShader(),
-    fragmentShader: fragmentShader(),
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uAmp;
+      uniform float uMouseIntensity;
+      varying vec3 vNormal;
+      varying vec3 vPos;
+
+      // Color Blend: Linear interpolation (lerp) between two hex codes
+      // Electric Blue: #0066FF -> vec3(0.0, 0.4, 1.0)
+      // Deep Magenta: #FF00FF -> vec3(1.0, 0.0, 1.0)
+      vec3 hexToRgb(vec3 hex){
+        return hex / 255.0;
+      }
+      
+      vec3 lerpColor(vec3 color1, vec3 color2, float t){
+        return mix(color1, color2, t);
+      }
+
+      void main(){
+        vec3 n = normalize(vNormal);
+        vec3 viewDir = normalize(-vPos);
+        
+        // Color Blend: Linear interpolation between hex codes
+        vec3 electricBlue = vec3(0.0, 0.4, 1.0); // #0066FF normalized
+        vec3 deepMagenta = vec3(1.0, 0.0, 1.0); // #FF00FF normalized
+        
+        float gradient = dot(n, vec3(0.5, 0.3, -0.8)); // Gradient direction
+        gradient = gradient * 0.5 + 0.5; // Normalize to 0-1
+        
+        // Linear interpolation (lerp) between the two hex colors
+        vec3 color = lerpColor(electricBlue, deepMagenta, gradient);
+        
+        // The Glow: Emissive materials for glow effect
+        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 1.5);
+        float emissive = 0.8 + fresnel * 0.2 + uAmp * 1.0;
+        color *= emissive; // Emissive glow
+        
+        // Additional brightness boost
+        color += color * 0.5;
+        
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `,
+    wireframe: true,
+    transparent: false, // Opaque for better grid visibility
+    side: THREE.DoubleSide,
+    emissive: new THREE.Color(0x0066ff), // The Glow: Emissive material
+    emissiveIntensity: 1.5,
   });
-
-  // Core shaded orb
-  orb = new THREE.Mesh(geo, mat);
+  
+  orb = new THREE.Mesh(geo, meshMat);
   scene.add(orb);
-
-  // Enhanced wireframe shell - more prominent and glowing
+  
+  // Additional wireframe layer for extra definition and glow
   const wireGeo = new THREE.WireframeGeometry(geo);
-  const wireMat = new THREE.LineBasicMaterial({
-    color: 0x00ffff,
+  const wireMat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: vertexShader(),
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uAmp;
+      uniform float uMouseIntensity;
+      varying vec3 vPos;
+      
+      // Color Blend: Linear interpolation (lerp) between two hex codes
+      vec3 electricBlue = vec3(0.0, 0.4, 1.0); // #0066FF
+      vec3 deepMagenta = vec3(1.0, 0.0, 1.0); // #FF00FF
+      
+      vec3 lerpColor(vec3 color1, vec3 color2, float t){
+        return mix(color1, color2, t);
+      }
+
+      void main(){
+        // Color Blend: Linear interpolation between hex codes
+        vec3 pos = normalize(vPos);
+        float gradient = dot(pos, vec3(0.5, 0.3, -0.8)) * 0.5 + 0.5;
+        
+        // Linear interpolation (lerp) between the two hex colors
+        vec3 color = lerpColor(electricBlue, deepMagenta, gradient);
+        
+        // The Glow: Emissive glow for wireframe lines
+        float emissive = 0.6 + uAmp * 0.9;
+        color *= emissive;
+        color += color * 0.4;
+        
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `,
     transparent: true,
-    opacity: 0.8,
-    linewidth: 2,
+    blending: THREE.AdditiveBlending,
   });
   orbWire = new THREE.LineSegments(wireGeo, wireMat);
   scene.add(orbWire);
 
-  // Create animated point-cloud ring overlay
-  createPointRing();
+  // Create soft cloud effect inside the orb
+  const cloudGeo = new THREE.SphereGeometry(1.2, 32, 32);
+  const cloudMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uAmp: { value: 0 }
+    },
+    vertexShader: `
+      varying vec3 vPos;
+      varying vec3 vNormal;
+      void main(){
+        vNormal = normal;
+        vPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uAmp;
+      varying vec3 vPos;
+      varying vec3 vNormal;
+      
+      // Simplex noise function
+      vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+      vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+      vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+      vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+      float snoise(vec3 v){
+        const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+        const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+        vec3 i = floor(v + dot(v, C.yyy));
+        vec3 x0 = v - i + dot(i, C.xxx);
+        vec3 g = step(x0.yzx, x0.xyz);
+        vec3 l = 1.0 - g;
+        vec3 i1 = min(g.xyz, l.zxy);
+        vec3 i2 = max(g.xyz, l.zxy);
+        vec3 x1 = x0 - i1 + C.xxx;
+        vec3 x2 = x0 - i2 + C.yyy;
+        vec3 x3 = x0 - D.yyy;
+        i = mod289(i);
+        vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+        float n_ = 0.142857142857;
+        vec3 ns = n_ * D.wyz - D.xzx;
+        vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+        vec4 x_ = floor(j * ns.z);
+        vec4 y_ = floor(j - 7.0 * x_);
+        vec4 x = x_ *ns.x + ns.yyyy;
+        vec4 y = y_ *ns.x + ns.yyyy;
+        vec4 h = 1.0 - abs(x) - abs(y);
+        vec4 b0 = vec4(x.xy, y.xy);
+        vec4 b1 = vec4(x.zw, y.zw);
+        vec4 s0 = floor(b0)*2.0 + 1.0;
+        vec4 s1 = floor(b1)*2.0 + 1.0;
+        vec4 sh = -step(h, vec4(0.0));
+        vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+        vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+        vec3 p0 = vec3(a0.xy,h.x);
+        vec3 p1 = vec3(a0.zw,h.y);
+        vec3 p2 = vec3(a1.xy,h.z);
+        vec3 p3 = vec3(a1.zw,h.w);
+        vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+        p0 *= norm.x;
+        p1 *= norm.y;
+        p2 *= norm.z;
+        p3 *= norm.w;
+        vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+        m = m * m;
+        return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+      }
+      
+      void main(){
+        vec3 pos = normalize(vPos);
+        float radius = length(vPos);
+        
+        // Multi-octave noise for cloud effect
+        float n1 = snoise(vPos * 0.8 + vec3(uTime * 0.1, 0.0, uTime * 0.15));
+        float n2 = snoise(vPos * 1.5 + vec3(0.0, uTime * 0.12, uTime * 0.08));
+        float n3 = snoise(vPos * 2.5 + vec3(uTime * 0.15, uTime * 0.1, 0.0));
+        float noise = (n1 * 0.5 + n2 * 0.3 + n3 * 0.2) * 0.5 + 0.5;
+        
+        // Audio-reactive intensity
+        float intensity = noise * (0.4 + uAmp * 0.6);
+        intensity = smoothstep(0.2, 0.8, intensity);
+        
+        // Soft teal/cyan cloud color
+        vec3 cloudColor = vec3(0.2, 0.8, 1.0) * (0.7 + uAmp * 0.3);
+        
+        // Fade edges for soft appearance
+        float edgeFade = 1.0 - smoothstep(0.9, 1.0, radius / 1.2);
+        
+        float alpha = intensity * edgeFade * 0.6;
+        gl_FragColor = vec4(cloudColor, alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.DoubleSide, // Render both sides so cloud is visible
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+  scene.add(cloud);
+  
+  // Store cloud reference for animation
+  window.orbCloud = cloud;
+
+  // Outer Dots: Point cloud buffer geometry
+  const particleCount = 2000;
+  const particlePositions = new Float32Array(particleCount * 3);
+  const particleColors = new Float32Array(particleCount * 3);
+  const particleSizes = new Float32Array(particleCount);
+  
+  for(let i = 0; i < particleCount; i++){
+    // Distribute particles in a shell around the orb
+    const u = Math.random();
+    const v = Math.random();
+    const theta = 2.0 * Math.PI * u;
+    const phi = Math.acos(2.0 * v - 1.0);
+    const r = 2.0 + (Math.random() - 0.5) * 0.8; // Shell radius
+    const x = r * Math.sin(phi) * Math.cos(theta);
+    const y = r * Math.sin(phi) * Math.sin(theta);
+    const z = r * Math.cos(phi);
+    
+    particlePositions[i * 3] = x;
+    particlePositions[i * 3 + 1] = y;
+    particlePositions[i * 3 + 2] = z;
+    
+    // Neon particle colors - electric blue to magenta gradient
+    const brightness = 0.9 + Math.random() * 0.1;
+    // Mix between blue and magenta based on position
+    const hueMix = Math.random();
+    if (hueMix < 0.5) {
+      // Electric blue particles
+      particleColors[i * 3] = 0.0;
+      particleColors[i * 3 + 1] = brightness * 0.4; // Blue-green
+      particleColors[i * 3 + 2] = brightness; // Full blue
+    } else {
+      // Magenta particles
+      particleColors[i * 3] = brightness; // Full red
+      particleColors[i * 3 + 1] = 0.0;
+      particleColors[i * 3 + 2] = brightness; // Full blue
+    }
+    
+    particleSizes[i] = 0.02 + Math.random() * 0.03;
+  }
+  
+  const particleGeo = new THREE.BufferGeometry();
+  particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+  particleGeo.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+  particleGeo.setAttribute('size', new THREE.BufferAttribute(particleSizes, 1));
+  
+  const particleMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uAmp: { value: 0 }
+    },
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      uniform float uTime;
+      uniform float uAmp;
+      
+      void main(){
+        vColor = color;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        
+        // Gentle floating motion
+        float floatOffset = sin(uTime * 0.5 + position.x * 0.1) * 0.1;
+        mvPosition.y += floatOffset;
+        
+        // Audio-reactive pulsing
+        float scale = 1.0 + uAmp * 0.3;
+        gl_PointSize = size * (300.0 / -mvPosition.z) * scale;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main(){
+        float dist = distance(gl_PointCoord, vec2(0.5));
+        float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
+        gl_FragColor = vec4(vColor, alpha * 0.8);
+      }
+    `,
+    transparent: true,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending
+  });
+  
+  const particles = new THREE.Points(particleGeo, particleMat);
+  scene.add(particles);
+  window.orbParticles = particles;
 
   window.addEventListener('resize', onWindowResize);
+
+  // Mouse interactivity for deformation intensity
+  const orbCanvas = document.getElementById('orbCanvas');
+  if (orbCanvas) {
+    orbCanvas.addEventListener('mousemove', (e) => {
+      const rect = orbCanvas.getBoundingClientRect();
+      mouseX = (e.clientX - rect.left) / rect.width;
+      mouseY = (e.clientY - rect.top) / rect.height;
+      // Calculate distance from center (0.5, 0.5)
+      const dx = mouseX - 0.5;
+      const dy = mouseY - 0.5;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      // Increase intensity when mouse is over canvas, fade when away
+      mouseIntensity = Math.max(0, 1.0 - dist * 2.0);
+    });
+    
+    orbCanvas.addEventListener('mouseleave', () => {
+      mouseIntensity = 0;
+    });
+  }
 
   // UI hooks
   const startBtn = document.getElementById('startBtn');
@@ -272,11 +563,12 @@ function animate(time){
   requestAnimationFrame(animate);
   const t = (time || 0) * 0.001;
   uniforms.uTime.value = t;
+  uniforms.uMouseIntensity.value = mouseIntensity; // Update mouse intensity
 
-  // update point uniforms too
-  if (pointsUniforms){
-    pointsUniforms.uTime.value = t;
-  }
+  // Point cloud removed - no updates needed
+  // if (pointsUniforms){
+  //   pointsUniforms.uTime.value = t;
+  // }
 
   // Read audio amplitude and smooth it
   const rawAmp = getAudioAmplitude();
@@ -301,18 +593,10 @@ function animate(time){
   visualAmp = Math.min(Math.max(visualAmp, 0), 1.0);
 
   uniforms.uAmp.value = visualAmp;
-  if (pointsUniforms) pointsUniforms.uAmp.value = visualAmp;
+  // Point cloud removed - no updates needed
+  // if (pointsUniforms) pointsUniforms.uAmp.value = visualAmp;
 
-  // Drive the circular UI rings from the same amplitude
-  if (ringOuterEl && ringInnerEl){
-    const outerScale = 1 + visualAmp * 0.25;
-    const innerScale = 1 + visualAmp * 0.15;
-    const glow = 40 + visualAmp * 140;
-    ringOuterEl.style.transform = `translate(-50%,-50%) scale(${outerScale})`;
-    ringOuterEl.style.boxShadow = `0 0 ${glow}px rgba(40,255,200,0.55)`;
-    ringInnerEl.style.transform = `translate(-50%,-50%) scale(${innerScale}) rotate(${t * 40})`;
-    ringInnerEl.style.opacity = String(0.4 + visualAmp * 0.6);
-  }
+  // Rings removed - no longer animating
   if (signalBarEl){
     const level = Math.min(100, 8 + amp * 92);
     signalBarEl.style.width = level + '%';
@@ -329,15 +613,47 @@ function animate(time){
     });
   }
 
-  // Rotate orb slightly based on amp
+  // Rotate and float the orb (mesh and wireframe together)
   if (orb){
+    // Gentle rotation
     orb.rotation.y += 0.003 + visualAmp * 0.02;
+    orb.rotation.x = 0.18 + visualAmp * 0.1;
+    
+    // Floating animation - gentle up and down movement
+    const floatOffset = Math.sin(t * 0.8) * 0.15; // Slow floating motion
+    orb.position.y = floatOffset;
+    
+    // Audio-reactive scale pulse
+    const scale = 1 + visualAmp * 0.15;
+    orb.scale.set(scale, scale, scale);
   }
-  if (orbWire){
-    orbWire.rotation.y = orb.rotation.y;
-    orbWire.rotation.x = 0.18 + visualAmp * 0.1;
-    const wireScale = 1 + visualAmp * 0.1;
-    orbWire.scale.set(wireScale, wireScale, wireScale);
+  
+  // Sync wireframe with mesh
+  if (orbWire && orb){
+    orbWire.rotation.copy(orb.rotation);
+    orbWire.position.copy(orb.position);
+    orbWire.scale.copy(orb.scale);
+  }
+  
+  // Sync cloud with orb
+  if (window.orbCloud && orb){
+    window.orbCloud.rotation.copy(orb.rotation);
+    window.orbCloud.position.copy(orb.position);
+    window.orbCloud.scale.copy(orb.scale);
+    if (window.orbCloud.material.uniforms){
+      window.orbCloud.material.uniforms.uTime.value = t;
+      window.orbCloud.material.uniforms.uAmp.value = visualAmp;
+    }
+  }
+  
+  // Sync particles with orb
+  if (window.orbParticles && orb){
+    window.orbParticles.rotation.copy(orb.rotation);
+    window.orbParticles.position.copy(orb.position);
+    if (window.orbParticles.material.uniforms){
+      window.orbParticles.material.uniforms.uTime.value = t;
+      window.orbParticles.material.uniforms.uAmp.value = visualAmp;
+    }
   }
 
   if (controls && controls.update) controls.update();
@@ -438,7 +754,7 @@ function startMic(){
     micMode = 'stream';
     diag('Microphone streaming — OK');
     if (btn){ setMicState('on'); btn.disabled = false; }
-    startSpeechRecognition();
+    startSpeechRecognition(true); // Play chime on initial mic start
   }).catch(err => {
     console.warn('Microphone access denied or error:', err);
     diag('Microphone denied or error — falling back to oscillator', true);
@@ -474,6 +790,32 @@ function startMic(){
   });
 }
 
+function toggleMicMute(){
+  if (!mediaStream) return;
+  
+  const tracks = mediaStream.getAudioTracks();
+  if (tracks.length === 0) return;
+  
+  micMuted = !micMuted;
+  
+  tracks.forEach(track => {
+    track.enabled = !micMuted;
+  });
+  
+  // Update button state
+  if (micMuted){
+    setMicState('muted');
+    if (speechRecognition && recognitionActive){
+      stopSpeechRecognition();
+    }
+  } else {
+    setMicState('on');
+    if (micMode === 'stream' && !recognitionActive){
+      startSpeechRecognition(false); // Don't play chime on unmute
+    }
+  }
+}
+
 function stopMic(){
   const diag = (m, err=false) => showDiag(m, err);
   if (mediaStream){
@@ -500,12 +842,13 @@ function stopMic(){
     ctx.close().catch(()=>{});
   }
   micMode = 'off';
+  micMuted = false; // Reset mute state
   lastTranscript = '';
   lastTranscriptAt = 0;
   resetWakeState();
   const btn = document.getElementById('startBtn');
   if (btn) btn.disabled = false;
-  setMicState('muted');
+  setMicState('idle');
   stopSpeechRecognition();
   diag('Microphone stopped');
 }
@@ -569,7 +912,14 @@ function setupSettingsPanel(){
 
   document.addEventListener('click', (evt) => {
     const target = evt.target;
-    if (!settingsPanel.contains(target) && !settingsBtn.contains(target)) closePanel();
+    // Only close if clicking outside the settings panel AND not on the settings button
+    // Also don't close if clicking on keyboard or inputs (they might be in the panel)
+    if (!settingsPanel.contains(target) && 
+        !settingsBtn.contains(target) &&
+        !onScreenKeyboardEl?.contains(target) &&
+        !target.matches('input, textarea, button, select')) {
+      closePanel();
+    }
   });
 
   // Time announcement interval selector
@@ -633,18 +983,23 @@ function setupSpeechFeatures(){
     recognitionActive = false;
     if (micMode !== 'off') {
       clearTimeout(speechRestartTimeout);
-      speechRestartTimeout = setTimeout(() => startSpeechRecognition(), 700);
+      // Auto-restart without chime to prevent spam
+      speechRestartTimeout = setTimeout(() => startSpeechRecognition(false), 700);
     }
   };
 }
 
-function startSpeechRecognition(){
+function startSpeechRecognition(playChimeSound = false){
   if (!speechRecognition || recognitionActive || micMode !== 'stream') return;
   try{
     speechRecognition.start();
     recognitionActive = true;
-    // Chime to indicate we are actively listening
-    playStartChime();
+    // Only play chime on explicit starts (user action) or first start, not on auto-restarts
+    if (playChimeSound && !chimeCooldown) {
+      playStartChime();
+      chimeCooldown = true;
+      setTimeout(() => { chimeCooldown = false; }, 500); // 500ms cooldown
+    }
   }catch(err){
     if (err.name !== 'InvalidStateError'){
       console.warn('Speech recognition start failed:', err);
@@ -700,10 +1055,10 @@ function setupOnScreenKeyboard(){
       e.stopPropagation(); // Prevent click from bubbling to document
       console.log('[Keyboard] Key clicked:', key.dataset.key);
       handleKeyboardKey(key.dataset.key);
-      // Reset flag after a short delay
+      // Reset flag after a longer delay to ensure document click handler sees it
       setTimeout(() => {
         keyboardKeyClicked = false;
-      }, 100);
+      }, 300);
     }, true); // Use capture phase - runs first
   });
 
@@ -721,13 +1076,20 @@ function setupOnScreenKeyboard(){
       return; // Click is on keyboard, don't hide
     }
     
-    // Don't hide if clicking on an input
-    if (e.target.matches('input[type="text"], textarea')) {
-      console.log('[Keyboard] Click on input, not hiding');
-      return; // Click is on input, don't hide
+    // Don't hide if clicking on an input or any form element
+    if (e.target.matches('input, textarea, button, select, label')) {
+      console.log('[Keyboard] Click on form element, not hiding');
+      return; // Click is on form element, don't hide
     }
     
-    // Only hide if we have an active input
+    // Don't hide if clicking inside settings panel (it might contain inputs)
+    const settingsPanel = document.getElementById('settingsPanel');
+    if (settingsPanel && settingsPanel.contains(e.target)) {
+      console.log('[Keyboard] Click inside settings panel, not hiding');
+      return;
+    }
+    
+    // Only hide if we have an active input and clicked truly outside
     if (activeInputEl) {
       console.log('[Keyboard] Click outside, hiding keyboard');
       hideKeyboard();
@@ -790,11 +1152,12 @@ function handleKeyboardKey(key){
       }
       break;
     case 'enter':
+      // Always hide keyboard when Enter is pressed
+      hideKeyboard();
+      // For textareas, also insert a newline before hiding
       if (input.tagName === 'TEXTAREA') {
         input.value = value.substring(0, start) + '\n' + value.substring(end);
         input.setSelectionRange(start + 1, start + 1);
-      } else {
-        hideKeyboard();
       }
       break;
     case 'shift':
@@ -1533,7 +1896,7 @@ function handleRecognitionError(evt){
     );
     if (recoverable){
       clearTimeout(speechRestartTimeout);
-      speechRestartTimeout = setTimeout(() => startSpeechRecognition(), 1000);
+      speechRestartTimeout = setTimeout(() => startSpeechRecognition(false), 1000);
     }
   }
 }
@@ -1579,14 +1942,13 @@ async function processVoiceCommand(raw){
     return;
   }
 
-  if (keyText === 'mute' || keyText.includes('mute mic') || keyText.includes('mute microphone')){
-    if (speechRecognition && recognitionActive){
-      stopSpeechRecognition();
-      micMutedForCommand = true;
-    }
-    deliverResponse(raw, 'Muting my microphone while I respond.');
+  if (keyText === 'mute' || keyText.includes('mute mic') || keyText.includes('mute microphone') || keyText === 'unmute' || keyText.includes('unmute mic')){
+    toggleMicMute();
+    const response = micMuted ? 'Microphone muted.' : 'Microphone unmuted.';
+    deliverResponse(raw, response);
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
+    resetWakeState();
     return;
   }
 
@@ -1976,7 +2338,7 @@ function speakResponse(message){
   utterance.onend = () => {
     isSpeaking = false;
     if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
-      startSpeechRecognition();
+      startSpeechRecognition(false); // Resume without chime
     }
     micMutedForCommand = false;
     recognitionPausedForSpeech = false;
@@ -1984,7 +2346,7 @@ function speakResponse(message){
   utterance.onerror = () => {
     isSpeaking = false;
     if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
-      startSpeechRecognition();
+      startSpeechRecognition(false); // Resume without chime
     }
     micMutedForCommand = false;
     recognitionPausedForSpeech = false;
@@ -2077,6 +2439,7 @@ function vertexShader(){
   return `
     uniform float uTime;
     uniform float uAmp;
+    uniform float uMouseIntensity;
     varying vec3 vNormal;
     varying vec3 vPos;
 
@@ -2136,12 +2499,20 @@ function vertexShader(){
       vPos = position;
       float a = uAmp;
       
-      // More organic, fluid deformation for wireframe look
+      // Wavy Movement: Vertex shader displacement using 3D noise
       float noiseScale = 1.4;
+      // 3D noise for wavy displacement
       float n1 = snoise(position * noiseScale + vec3(0.0, uTime*0.5, uTime*0.3));
       float n2 = snoise(position * noiseScale * 0.7 + vec3(uTime*0.3, 0.0, uTime*0.4));
-      float n = (n1 + n2 * 0.5) * 0.67; // Blend two noise layers
-      float displacement = n * (0.6 + a * 1.2); // More dynamic deformation
+      float n3 = snoise(position * noiseScale * 0.4 + vec3(uTime*0.2, uTime*0.3, 0.0));
+      // Blend three 3D noise layers for organic wavy movement
+      float n = (n1 * 0.5 + n2 * 0.3 + n3 * 0.2);
+      
+      // Deformation intensity increases with mouse hover
+      float baseDisplacement = 0.4;
+      float audioDisplacement = a * 1.0; // Strong audio reaction
+      float mouseDisplacement = uMouseIntensity * 0.3; // Mouse hover increases deformation
+      float displacement = n * (baseDisplacement + audioDisplacement + mouseDisplacement);
       
       vec3 newPos = position + normal * displacement;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
