@@ -109,14 +109,12 @@ function playStopChime(){
 const weatherCache = new Map(); // key: normalized location, value: { data, fetchedAt }
 const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-// Wait for Three.js to load before initializing
-(function waitForThree() {
-  if (typeof THREE !== 'undefined' && THREE) {
-    init();
-  } else {
-    setTimeout(waitForThree, 50);
-  }
-})();
+// Initialize - bootstrap script ensures Three.js loads before this module
+// Use requestAnimationFrame to ensure DOM is ready
+requestAnimationFrame(() => {
+  // Small delay to ensure everything is initialized
+  setTimeout(init, 50);
+});
 
 async function init(){
   signalBarEl = document.getElementById('signalBar');
@@ -177,13 +175,28 @@ async function init(){
   } else if (window.OrbitControls) {
     ControlsClass = window.OrbitControls;
   } else {
+    // Try loading legacy OrbitControls from CDN (non-ES module version)
     try{
-      const mod = await import('https://unpkg.com/three@0.152.2/examples/jsm/controls/OrbitControls.js');
-      ControlsClass = mod.OrbitControls;
-      showDiag('Loaded OrbitControls module fallback');
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js';
+      script.onload = () => {
+        if (window.OrbitControls) {
+          ControlsClass = window.OrbitControls;
+          if (renderer && camera) {
+            try{
+              controls = new ControlsClass(camera, renderer.domElement);
+              controls.enablePan = false;
+              controls.enableZoom = true;
+            }catch(e){
+              console.warn('Failed to construct controls after load:', e);
+            }
+          }
+        }
+      };
+      document.head.appendChild(script);
     }catch(e){
-      console.warn('Failed to load OrbitControls module:', e);
-      showDiag('OrbitControls unavailable — continuing without orbit controls', true);
+      console.warn('Failed to load OrbitControls:', e);
+      // OrbitControls is optional - app works without it
     }
   }
   if (ControlsClass){
@@ -192,8 +205,7 @@ async function init(){
       controls.enablePan = false;
       controls.enableZoom = true;
     }catch(e){
-      console.warn('Failed to construct controls:', e);
-      showDiag('Failed to initialize controls', true);
+      // OrbitControls failed - not critical, orb still works
     }
   }
 
@@ -224,13 +236,13 @@ async function init(){
   orb = new THREE.Mesh(geo, mat);
   scene.add(orb);
 
-  // Wireframe shell for extra structure / interaction lines
+  // Enhanced wireframe shell - more prominent and glowing
   const wireGeo = new THREE.WireframeGeometry(geo);
   const wireMat = new THREE.LineBasicMaterial({
-    color: 0x66ffe6,
+    color: 0x00ffff,
     transparent: true,
-    opacity: 0.4,
-    linewidth: 1,
+    opacity: 0.8,
+    linewidth: 2,
   });
   orbWire = new THREE.LineSegments(wireGeo, wireMat);
   scene.add(orbWire);
@@ -352,10 +364,13 @@ function createPointRing(){
     positions[i*3+0] = x;
     positions[i*3+1] = y;
     positions[i*3+2] = z;
-    const c = 0.6 + Math.random()*0.4;
-    colors[i*3+0] = 0.2 * c;
-    colors[i*3+1] = 1.0 * c;
-    colors[i*3+2] = 0.9 * c;
+    
+    // Teal color for particles (no gradient needed)
+    const c = 0.7 + Math.random()*0.3;
+    // Store brightness in color channels
+    colors[i*3+0] = c;
+    colors[i*3+1] = c;
+    colors[i*3+2] = c;
   }
 
   const g = new THREE.BufferGeometry();
@@ -2120,9 +2135,14 @@ function vertexShader(){
       vNormal = normal;
       vPos = position;
       float a = uAmp;
-      float noiseScale = 1.6;
-      float n = snoise(position * noiseScale + vec3(0.0, uTime*0.6, uTime*0.3));
-      float displacement = n * (0.9 + a * 1.8);
+      
+      // More organic, fluid deformation for wireframe look
+      float noiseScale = 1.4;
+      float n1 = snoise(position * noiseScale + vec3(0.0, uTime*0.5, uTime*0.3));
+      float n2 = snoise(position * noiseScale * 0.7 + vec3(uTime*0.3, 0.0, uTime*0.4));
+      float n = (n1 + n2 * 0.5) * 0.67; // Blend two noise layers
+      float displacement = n * (0.6 + a * 1.2); // More dynamic deformation
+      
       vec3 newPos = position + normal * displacement;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
     }
@@ -2144,37 +2164,54 @@ function fragmentShader(){
 
     void main(){
       vec3 n = normalize(vNormal);
+      vec3 viewDir = normalize(-vPos);
       float ndotl = dot(n, vec3(0.0, 0.0, 1.0));
-      float intensity = pow(abs(ndotl), 1.4);
+      
+      // Enhanced fresnel for glowing wireframe look
+      float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0);
+      float intensity = pow(max(ndotl, 0.0), 0.6);
+      intensity = mix(intensity, 1.0, fresnel * 0.7);
 
       float radius = length(vPos);
-      float audioGlow = smoothstep(0.0, 1.0, uAmp * 2.8 + radius * 0.06);
+      
+      // Audio-reactive glow
+      float audioGlow = smoothstep(0.0, 1.0, uAmp * 3.0);
+      
+      // Consistent teal color (no gradient)
+      float hue = 0.48; // Teal/cyan
+      
+      // Subtle animation and audio response
+      hue += sin(uTime * 0.3 + radius * 1.5) * 0.01;
+      hue += uAmp * 0.02;
+      
+      float sat = 0.85 + audioGlow * 0.15;
+      sat = clamp(sat, 0.85, 1.0);
+      
+      // Bright, vibrant values
+      float val = mix(0.9, 1.0, audioGlow);
+      val = clamp(val, 0.85, 1.0);
 
-      // Shift hue subtly with audio and position to get a cohesive cyan/teal tone
-      float baseHue = 0.47;                 // cyan/teal
-      float hueShift = -0.15 * uAmp + 0.03 * sin(uTime*1.4 + radius*3.5);
-      float innerHue = baseHue + hueShift;
-      float outerHue = innerHue;            // keep same hue at edge (no blue gradient)
+      vec3 color = hsv2rgb(vec3(hue, sat, val));
 
-      float sat = mix(0.7, 1.0, audioGlow);
-      float valInner = 0.95;
-      float valOuter = 0.7;
+      // Strong rim light for wireframe glow effect
+      float rim = pow(1.0 - abs(ndotl), 1.8);
+      rim *= (1.0 + uAmp * 0.5);
+      color += color * rim * 0.4;
 
-      vec3 innerColor = hsv2rgb(vec3(innerHue, sat, valInner));
-      vec3 outerColor = hsv2rgb(vec3(outerHue, sat, valOuter)); // same hue, just a bit darker
+      // Enhanced fresnel edge glow
+      color += color * fresnel * 0.3;
 
-      // Blend from center to edge and add a soft rim light
-      float edge = smoothstep(0.6, 1.2, radius);
-      vec3 base = mix(innerColor, outerColor, edge);
+      // Dynamic pulse with audio
+      float pulse = 1.0 + uAmp * 0.2;
+      color *= pulse;
 
-      float rim = pow(1.0 - abs(ndotl), 3.0);
-      base += innerColor * rim * 0.25;
+      // Apply lighting with more intensity
+      vec3 finalColor = color * intensity;
+      
+      // Bright, vibrant appearance
+      finalColor = pow(finalColor, vec3(0.9));
 
-      // Slight pulse on audio peaks
-      float pulse = 0.12 * smoothstep(0.25, 0.9, uAmp);
-      base *= (1.0 + pulse);
-
-      gl_FragColor = vec4(base * intensity, 1.0);
+      gl_FragColor = vec4(finalColor, 1.0);
     }
   `;
 }
@@ -2205,12 +2242,32 @@ function pointsVertexShader(){
 
 function pointsFragmentShader(){
   return `
+    uniform float uTime;
+    uniform float uAmp;
     varying vec3 vColor;
+    
+    vec3 hsv2rgb(vec3 c){
+      vec3 rgb = clamp( abs(mod(c.x*6.0 + vec3(0.0,4.0,2.0), 6.0)-3.0)-1.0, 0.0, 1.0 );
+      rgb = rgb*rgb*(3.0-2.0*rgb);
+      return c.z * mix(vec3(1.0), rgb, c.y);
+    }
+    
     void main(){
       float r = length(gl_PointCoord - vec2(0.5));
-      float alpha = smoothstep(0.5, 0.1, r);
-      vec3 col = vColor;
-      gl_FragColor = vec4(col, alpha*0.9);
+      float alpha = smoothstep(0.5, 0.0, r);
+      
+      // Teal color for particles (matching orb)
+      float hue = 0.48; // Teal/cyan
+      float sat = 0.9;
+      float val = vColor.z * (1.0 + uAmp * 0.2); // Use stored brightness, enhance with audio
+      
+      vec3 col = hsv2rgb(vec3(hue, sat, val));
+      
+      // Bright, glowing particles that pulse with audio
+      alpha *= (0.95 + uAmp * 0.05);
+      col *= (1.0 + uAmp * 0.15); // Brighter with audio
+      
+      gl_FragColor = vec4(col, alpha);
     }
   `;
 }
