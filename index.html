@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>A.V.R.I.L — Audio Reactive UI</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -25,6 +26,10 @@
             <div class="meter-track">
               <div class="meter-bar" id="signalBar"></div>
             </div>
+          </div>
+          <div class="hud-card" id="networkStatus" style="min-width: 80px;">
+            <span class="label">Network</span>
+            <span class="value" id="networkStatusText">Online</span>
           </div>
           <div class="hud-card" id="alarmIndicator" hidden>
             <span class="label">Alarm</span>
@@ -94,17 +99,23 @@
         <aside class="command-list" aria-label="Voice command list">
           <div class="command-list-title">Commands</div>
           <ul class="command-list-items">
-            <li><span class="kw">Hello</span> — wake A.V.R.I.L</li>
+            <li><span class="kw">Hello</span> / <span class="kw">Hey Avril</span> / <span class="kw">Wake up</span> — wake A.V.R.I.L</li>
             <li><span class="kw">What time is it?</span></li>
             <li><span class="kw">What is the date today?</span></li>
-            <li><span class="kw">What is the weather in &lt;city&gt;?</span></li>
-            <li><span class="kw">Set alarm for &lt;time&gt;</span> — set an alarm (e.g., "set alarm for 7:30 AM")</li>
-            <li><span class="kw">Stop alarm</span> — stop the alarm</li>
-            <li><span class="kw">Cancel alarm</span> — cancel/delete the alarm</li>
-            <li><span class="kw">Snooze</span> — snooze alarm for 5 minutes</li>
-            <li><span class="kw">Show commands</span> — open command list</li>
-            <li><span class="kw">Close command list</span> — close command list</li>
-            <li><span class="kw">Command list</span> — hear commands</li>
+            <li><span class="kw">What is the weather in [city]?</span></li>
+            <li><span class="kw">And tomorrow?</span> / <span class="kw">What about tomorrow?</span> — follow-up weather questions</li>
+            <li><span class="kw">Set alarm for [time]</span> — e.g., "Set alarm for 7:30 AM"</li>
+            <li><span class="kw">Stop alarm</span> / <span class="kw">Stop the alarm</span></li>
+            <li><span class="kw">Cancel alarm</span> / <span class="kw">Delete alarm</span> / <span class="kw">Clear alarm</span></li>
+            <li><span class="kw">Snooze</span> / <span class="kw">Snooze alarm</span> — snooze for 5 minutes</li>
+            <li><span class="kw">Remind me to [task] at [time]</span> — e.g., "Remind me to call mom at 3 PM"</li>
+            <li><span class="kw">List reminders</span> / <span class="kw">Show reminders</span></li>
+            <li><span class="kw">Tell me a joke</span> / <span class="kw">Joke</span></li>
+            <li><span class="kw">Mute</span> / <span class="kw">Mute mic</span> / <span class="kw">Mute microphone</span></li>
+            <li><span class="kw">Unmute</span> / <span class="kw">Unmute mic</span> / <span class="kw">Unmute microphone</span></li>
+            <li><span class="kw">Show commands</span> / <span class="kw">Open commands</span></li>
+            <li><span class="kw">Close command list</span> / <span class="kw">Close commands</span> / <span class="kw">Hide command list</span></li>
+            <li><span class="kw">Command list</span> / <span class="kw">List of commands</span> — hear commands</li>
           </ul>
           <div class="command-create">
             <div class="command-create-title">Add command</div>
@@ -198,8 +209,16 @@
             const s = document.createElement('script');
             s.src = src;
             if (options && options.type) s.type = options.type;
-            s.onload = () => resolve(true);
-            s.onerror = () => resolve(false);
+            s.onload = () => {
+              resolve(true);
+            };
+            s.onerror = (err) => {
+              // Only log if it's not a local file (expected to fail)
+              if (!src.includes('src/libs/')) {
+                console.warn(`Failed to load script from ${src}`);
+              }
+              resolve(false);
+            };
             document.head.appendChild(s);
           });
         }
@@ -214,20 +233,69 @@
             return true;
           }
 
-          // Fall back to CDN if local files are missing
-          const cdnThreeOk = await loadScript('https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js');
-          if (!cdnThreeOk || !window.THREE) return false;
-          await loadScript('https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js');
+          // Fall back to multiple CDN options if local files are missing
+          const cdnOptions = [
+            'https://unpkg.com/three@0.152.2/build/three.min.js',
+            'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js',
+            'https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js'
+          ];
+          
+          let threeLoaded = false;
+          for (const cdnUrl of cdnOptions) {
+            try {
+              const loaded = await loadScript(cdnUrl);
+              if (loaded && window.THREE) {
+                threeLoaded = true;
+                break;
+              }
+            } catch (e) {
+              console.warn(`Failed to load Three.js from ${cdnUrl}:`, e);
+              continue;
+            }
+          }
+          
+          if (!threeLoaded || !window.THREE) return false;
+          
+          // Load OrbitControls - try multiple sources
+          const controlsOptions = [
+            'https://unpkg.com/three@0.152.2/examples/js/controls/OrbitControls.js',
+            'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js'
+          ];
+          
+          for (const controlsUrl of controlsOptions) {
+            try {
+              await loadScript(controlsUrl);
+              if (window.THREE && window.THREE.OrbitControls) break;
+            } catch (e) {
+              console.warn(`Failed to load OrbitControls from ${controlsUrl}:`, e);
+            }
+          }
+          
+          // Load postprocessing libraries for Bloom effect
+          const postprocessingUrls = [
+            'https://unpkg.com/three@0.152.2/examples/js/postprocessing/EffectComposer.js',
+            'https://unpkg.com/three@0.152.2/examples/js/postprocessing/RenderPass.js',
+            'https://unpkg.com/three@0.152.2/examples/js/postprocessing/UnrealBloomPass.js'
+          ];
+          
+          for (const url of postprocessingUrls) {
+            try {
+              await loadScript(url);
+            } catch (e) {
+              console.warn(`Failed to load postprocessing library from ${url}:`, e);
+            }
+          }
+          
           return true;
         }
 
         (async function bootstrap() {
           const ok = await loadThreeStack();
           if (!ok) {
-            console.error('Failed to load Three.js — AVRIL visuals will be disabled.');
-            return;
+            console.warn('Failed to load Three.js — AVRIL visuals will be disabled. Voice features will still work.');
+            // Still load main.js even if Three.js fails - voice features work without it
           }
-          // Load main module after Three.js is ready
+          // Load main module after Three.js is ready (or failed)
           const mainScriptLoaded = await loadScript('./src/main.js', { type: 'module' });
           if (!mainScriptLoaded) {
             console.error('Failed to load main AVRIL script.');

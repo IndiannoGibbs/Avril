@@ -1,4 +1,6 @@
 let scene, camera, renderer, orb, orbWire, uniforms, controls;
+let composer, bloomPass, renderPass;
+let frequencyData = null; // For frequency-based audio reactivity
 let analyser, dataArray, audioCtx, sourceNode;
 let mediaStream, fallbackOsc, micMode = 'off';
 let speechRecognition, recognitionActive = false, selectedVoice = null;
@@ -27,6 +29,7 @@ let signalBarEl, micStatusEl, brandStatusEl;
 // Rings removed - no longer used
 let voiceBars = [];
 let listeningStatusEl;
+let networkStatusEl = null;
 let mouseX = 0, mouseY = 0;
 let mouseIntensity = 0; // Mouse hover intensity for deformation
 let sleepScreenEl, sleepTimeEl, sleepDateEl;
@@ -47,6 +50,25 @@ let activeInputEl = null;
 let keyboardShiftActive = false;
 let keyboardKeyClicked = false; // Flag to prevent hide when key is clicked
 let chimeCooldown = false; // Prevent chime spam on rapid restarts
+
+// Conversation context tracking
+let conversationContext = {
+  lastCommand: null,
+  lastCommandType: null,
+  lastLocation: null,
+  lastWeatherData: null,
+  contextActive: false,
+  contextTimeout: null
+};
+const CONTEXT_TIMEOUT = 30000; // 30 seconds for context to remain active
+
+// Reminders & Tasks system
+let reminders = []; // Array of {id, text, time, timestamp, completed}
+let reminderCheckInterval = null;
+
+// Error handling
+let errorRetryCount = 0;
+const MAX_RETRIES = 3;
 
 // Simple UI chimes to signal listening state / session changes.
 // Approximate a small bell using a few short, decaying partials.
@@ -116,9 +138,32 @@ const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // Initialize - bootstrap script ensures Three.js loads before this module
 // Use requestAnimationFrame to ensure DOM is ready
 requestAnimationFrame(() => {
-  // Small delay to ensure everything is initialized
-  setTimeout(init, 50);
+  // Small delay to ensure everything is initialized, then wait for Three.js
+  setTimeout(() => {
+    waitForThree();
+  }, 100);
 });
+
+function waitForThree(){
+  // Wait for Three.js with timeout
+  let attempts = 0;
+  const maxAttempts = 50; // 5 seconds max wait
+  
+  function checkThree() {
+    if (typeof THREE !== 'undefined' && THREE) {
+      init();
+    } else if (attempts < maxAttempts) {
+      attempts++;
+      setTimeout(checkThree, 100);
+    } else {
+      // Three.js failed to load - initialize without 3D features
+      console.warn('Three.js did not load within timeout. Initializing without 3D orb.');
+      init();
+    }
+  }
+  
+  checkThree();
+}
 
 async function init(){
   signalBarEl = document.getElementById('signalBar');
@@ -126,12 +171,29 @@ async function init(){
   brandStatusEl = document.getElementById('brandStatus');
   // Rings removed - no longer needed
   listeningStatusEl = document.getElementById('listeningStatus');
+  networkStatusEl = document.getElementById('networkStatusText');
   voiceBars = Array.from(document.querySelectorAll('.voice-bar'));
   sleepScreenEl = document.getElementById('sleepScreen');
   sleepTimeEl = document.getElementById('sleepTime');
   sleepDateEl = document.getElementById('sleepDate');
   alarmIndicatorEl = document.getElementById('alarmIndicator');
   alarmTimeDisplayEl = document.getElementById('alarmTimeDisplay');
+  
+  // Load reminders from storage
+  loadRemindersFromStorage();
+  
+  // Setup offline/online detection
+  window.addEventListener('online', () => {
+    updateNetworkStatus();
+    errorRetryCount = 0; // Reset retry count when back online
+    if (micStatusEl) updateStatusText('Online');
+  });
+  window.addEventListener('offline', () => {
+    updateNetworkStatus();
+    if (micStatusEl) updateStatusText('Offline mode');
+  });
+  updateNetworkStatus();
+  
   updateStatusText('Calibrating');
   setListening(false);
   updateAlarmIndicator();
@@ -149,7 +211,10 @@ async function init(){
 
   // Once core features are wired up, move out of "Calibrating" into a ready state
   // The status will update automatically when startMic() completes
-  updateStatusText('Ready');
+  // Don't override muted status
+  if (!micMuted) {
+    updateStatusText('Ready');
+  }
 
   // Check if Three.js is available before initializing 3D scene
   if (typeof THREE === 'undefined' || !THREE) {
@@ -170,6 +235,66 @@ async function init(){
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(45, cw/ch, 0.1, 1000);
   camera.position.set(0,0,6);
+  
+  // Setup Bloom effect with EffectComposer (after scene and camera are created)
+  if (window.THREE && window.THREE.EffectComposer) {
+    try {
+      composer = new THREE.EffectComposer(renderer);
+      
+      // Render pass - renders the scene
+      renderPass = new THREE.RenderPass(scene, camera);
+      composer.addPass(renderPass);
+      
+      // Bloom pass - creates the glow effect
+      bloomPass = new THREE.UnrealBloomPass(
+        new THREE.Vector2(cw, ch), // Resolution
+        1.5,  // Strength
+        0.4,  // Radius
+        0.3   // Low threshold so electric blue and magenta lines glow and bleed light
+      );
+      composer.addPass(bloomPass);
+      
+      // Set renderToScreen to true for the last pass
+      bloomPass.renderToScreen = true;
+      
+      console.log('Bloom effect initialized');
+    } catch (e) {
+      console.warn('Failed to initialize Bloom effect:', e);
+      composer = null;
+    }
+  } else {
+    console.warn('EffectComposer not available - Bloom effect disabled');
+  }
+  
+  // Setup Bloom effect with EffectComposer (after scene and camera are created)
+  if (window.THREE && window.THREE.EffectComposer) {
+    try {
+      composer = new THREE.EffectComposer(renderer);
+      
+      // Render pass - renders the scene
+      renderPass = new THREE.RenderPass(scene, camera);
+      composer.addPass(renderPass);
+      
+      // Bloom pass - creates the glow effect
+      bloomPass = new THREE.UnrealBloomPass(
+        new THREE.Vector2(cw, ch), // Resolution
+        1.5,  // Strength
+        0.4,  // Radius
+        0.3   // Low threshold so electric blue and magenta lines glow and bleed light
+      );
+      composer.addPass(bloomPass);
+      
+      // Set renderToScreen to true for the last pass
+      bloomPass.renderToScreen = true;
+      
+      console.log('Bloom effect initialized');
+    } catch (e) {
+      console.warn('Failed to initialize Bloom effect:', e);
+      composer = null;
+    }
+  } else {
+    console.warn('EffectComposer not available - Bloom effect disabled');
+  }
 
   // Controls: try to use THREE.OrbitControls (global), otherwise dynamically import the module
   let ControlsClass = null;
@@ -222,13 +347,14 @@ async function init(){
   uniforms = {
     uTime: { value: 0 },
     uAmp: { value: 0 },
+    uFrequencyIntensity: { value: 0 }, // Frequency-based intensity for displacement
     uMouseIntensity: { value: 0 }, // Mouse hover intensity for deformation
     uColor: { value: new THREE.Color(0x66ccff) },
     uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
   };
 
-  // The Grid Look: Wireframe material with high segment count
-  const geo = new THREE.IcosahedronGeometry(1.6, 8); // Very high segment count for dense grid
+  // Circular bubble with very high segment count for smoother, more organic surface
+  const geo = new THREE.SphereGeometry(1.6, 128, 128); // Increased segments for smoother surface
 
   // Main wireframe mesh - organic teal gradient with glowing effect
   const meshMat = new THREE.ShaderMaterial({
@@ -266,19 +392,22 @@ async function init(){
         // Linear interpolation (lerp) between the two hex colors
         vec3 color = lerpColor(electricBlue, deepMagenta, gradient);
         
-        // The Glow: Emissive materials for glow effect
-        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 1.5);
-        float emissive = 0.8 + fresnel * 0.2 + uAmp * 1.0;
-        color *= emissive; // Emissive glow
+        // Bubble effect: Fresnel for edge glow, fully transparent center
+        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 2.5);
+        float emissive = 0.5 + fresnel * 0.5 + uAmp * 0.6;
+        color *= emissive;
         
-        // Additional brightness boost
-        color += color * 0.5;
+        // Make interior fully transparent, only show wireframe at edges
+        // Fresnel makes edges visible, center is transparent
+        float alpha = fresnel * 0.9; // Almost fully transparent, only edges visible
         
-        gl_FragColor = vec4(color, 1.0);
+        gl_FragColor = vec4(color, alpha);
       }
     `,
     wireframe: true,
-    transparent: false, // Opaque for better grid visibility
+    wireframeLinewidth: 0.5, // Thinner wireframe lines
+    transparent: true, // Transparent for premium AI energy aesthetic
+    opacity: 0.4, // Reduced opacity so front and back blend organically
     side: THREE.DoubleSide,
     emissive: new THREE.Color(0x0066ff), // The Glow: Emissive material
     emissiveIntensity: 1.5,
@@ -287,7 +416,7 @@ async function init(){
   orb = new THREE.Mesh(geo, meshMat);
   scene.add(orb);
   
-  // Additional wireframe layer for extra definition and glow
+  // Additional wireframe layer for extra definition and glow (outer, same size)
   const wireGeo = new THREE.WireframeGeometry(geo);
   const wireMat = new THREE.ShaderMaterial({
     uniforms,
@@ -319,14 +448,47 @@ async function init(){
         color *= emissive;
         color += color * 0.4;
         
-        gl_FragColor = vec4(color, 1.0);
+        gl_FragColor = vec4(color, 0.4); // Reduced opacity for organic blending
+      }
+    `,
+    transparent: true,
+    opacity: 0.4, // Reduced opacity for organic blending
+    blending: THREE.AdditiveBlending,
+  });
+  orbWire = new THREE.LineSegments(wireGeo, wireMat);
+  scene.add(orbWire);
+
+  // Smaller pink wireframe layer inside the orb
+  const pinkWireGeo = new THREE.SphereGeometry(1.3, 64, 64); // Smaller radius (1.3 vs 1.6)
+  const pinkWireFrameGeo = new THREE.WireframeGeometry(pinkWireGeo);
+  const pinkWireMat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: vertexShader(),
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uAmp;
+      uniform float uMouseIntensity;
+      varying vec3 vPos;
+      
+      void main(){
+        // Pink/magenta color for inner wireframe
+        vec3 pinkColor = vec3(1.0, 0.3, 0.8); // Bright pink
+        float emissive = 0.7 + uAmp * 0.8;
+        pinkColor *= emissive;
+        pinkColor += pinkColor * 0.3;
+        
+        gl_FragColor = vec4(pinkColor, 1.0);
       }
     `,
     transparent: true,
     blending: THREE.AdditiveBlending,
   });
-  orbWire = new THREE.LineSegments(wireGeo, wireMat);
-  scene.add(orbWire);
+  const pinkWire = new THREE.LineSegments(pinkWireFrameGeo, pinkWireMat);
+  scene.add(pinkWire);
+  
+  // Store reference for animation sync
+  window.pinkWire = pinkWire;
+  
 
   // Create soft cloud effect inside the orb
   const cloudGeo = new THREE.SphereGeometry(1.2, 32, 32);
@@ -454,23 +616,21 @@ async function init(){
     particlePositions[i * 3 + 1] = y;
     particlePositions[i * 3 + 2] = z;
     
-    // Neon particle colors - electric blue to magenta gradient
-    const brightness = 0.9 + Math.random() * 0.1;
-    // Mix between blue and magenta based on position
-    const hueMix = Math.random();
-    if (hueMix < 0.5) {
-      // Electric blue particles
-      particleColors[i * 3] = 0.0;
-      particleColors[i * 3 + 1] = brightness * 0.4; // Blue-green
-      particleColors[i * 3 + 2] = brightness; // Full blue
+    // Dim blue and purple particles
+    const isBlue = Math.random() > 0.5;
+    if (isBlue) {
+      // Dim blue particles
+      particleColors[i * 3] = 0.1 + Math.random() * 0.15; // Blue R
+      particleColors[i * 3 + 1] = 0.2 + Math.random() * 0.2; // Blue G
+      particleColors[i * 3 + 2] = 0.4 + Math.random() * 0.3; // Blue B
     } else {
-      // Magenta particles
-      particleColors[i * 3] = brightness; // Full red
-      particleColors[i * 3 + 1] = 0.0;
-      particleColors[i * 3 + 2] = brightness; // Full blue
+      // Dim purple particles
+      particleColors[i * 3] = 0.3 + Math.random() * 0.2; // Purple R
+      particleColors[i * 3 + 1] = 0.1 + Math.random() * 0.15; // Purple G
+      particleColors[i * 3 + 2] = 0.3 + Math.random() * 0.2; // Purple B
     }
     
-    particleSizes[i] = 0.02 + Math.random() * 0.03;
+    particleSizes[i] = 0.5 + Math.random() * 0.5; // Small particles
   }
   
   const particleGeo = new THREE.BufferGeometry();
@@ -509,7 +669,7 @@ async function init(){
       void main(){
         float dist = distance(gl_PointCoord, vec2(0.5));
         float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
-        gl_FragColor = vec4(vColor, alpha * 0.8);
+        gl_FragColor = vec4(vColor, alpha * 0.4); // Dim particles
       }
     `,
     transparent: true,
@@ -520,6 +680,101 @@ async function init(){
   const particles = new THREE.Points(particleGeo, particleMat);
   scene.add(particles);
   window.orbParticles = particles;
+
+  // Outer Particle Field: ~500 tiny, glowing dots surrounding the orb
+  // Premium AI energy aesthetic - matches blue and magenta color scheme
+  const outerParticleCount = 500;
+  const outerParticlePositions = new Float32Array(outerParticleCount * 3);
+  const outerParticleColors = new Float32Array(outerParticleCount * 3);
+  const outerParticleSizes = new Float32Array(outerParticleCount);
+  
+  for (let i = 0; i < outerParticleCount; i++) {
+    // Distribute particles in a sphere shell around the orb
+    const radius = 3.0 + Math.random() * 1.5; // 3.0 to 4.5 units from center
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(Math.random() * 2 - 1);
+    
+    outerParticlePositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+    outerParticlePositions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    outerParticlePositions[i * 3 + 2] = radius * Math.cos(phi);
+    
+    // Electric blue and magenta colors (glowing)
+    const isBlue = Math.random() > 0.5;
+    if (isBlue) {
+      // Electric blue particles
+      outerParticleColors[i * 3] = 0.0;
+      outerParticleColors[i * 3 + 1] = 0.3 + Math.random() * 0.2; // Blue-green
+      outerParticleColors[i * 3 + 2] = 0.8 + Math.random() * 0.2; // Bright blue
+    } else {
+      // Magenta particles
+      outerParticleColors[i * 3] = 0.8 + Math.random() * 0.2; // Bright red
+      outerParticleColors[i * 3 + 1] = 0.0;
+      outerParticleColors[i * 3 + 2] = 0.8 + Math.random() * 0.2; // Bright blue
+    }
+    
+    outerParticleSizes[i] = 0.3 + Math.random() * 0.4; // Tiny particles
+  }
+  
+  const outerParticleGeometry = new THREE.BufferGeometry();
+  outerParticleGeometry.setAttribute('position', new THREE.BufferAttribute(outerParticlePositions, 3));
+  outerParticleGeometry.setAttribute('color', new THREE.BufferAttribute(outerParticleColors, 3));
+  outerParticleGeometry.setAttribute('size', new THREE.BufferAttribute(outerParticleSizes, 1));
+  
+  const outerParticleMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uAmp: { value: 0 }
+    },
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      uniform float uTime;
+      uniform float uAmp;
+      
+      void main() {
+        vColor = color;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        
+        // Slow rotation around center
+        float angle = uTime * 0.2;
+        float cosA = cos(angle);
+        float sinA = sin(angle);
+        vec3 rotatedPos = vec3(
+          mvPosition.x * cosA - mvPosition.z * sinA,
+          mvPosition.y,
+          mvPosition.x * sinA + mvPosition.z * cosA
+        );
+        mvPosition = vec4(rotatedPos, mvPosition.w);
+        
+        // Gentle floating motion
+        float floatOffset = sin(uTime * 0.3 + position.x * 0.1) * 0.08;
+        mvPosition.y += floatOffset;
+        
+        // Audio-reactive pulsing
+        float scale = 1.0 + uAmp * 0.4;
+        gl_PointSize = size * (300.0 / -mvPosition.z) * scale;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float dist = distance(gl_PointCoord, vec2(0.5));
+        float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
+        // Glowing particles with high emissive intensity
+        gl_FragColor = vec4(vColor * 1.5, alpha * 0.9);
+      }
+    `,
+    transparent: true,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  
+  const outerParticleField = new THREE.Points(outerParticleGeometry, outerParticleMaterial);
+  scene.add(outerParticleField);
+  window.outerParticleField = outerParticleField;
 
   window.addEventListener('resize', onWindowResize);
 
@@ -635,6 +890,15 @@ function animate(time){
     orbWire.scale.copy(orb.scale);
   }
   
+  // Sync pink wireframe with orb (smaller, inside)
+  if (window.pinkWire && orb){
+    window.pinkWire.rotation.copy(orb.rotation);
+    window.pinkWire.position.copy(orb.position);
+    // Keep pink wireframe slightly smaller scale
+    const pinkScale = 0.81; // 1.3/1.6 = 0.8125, slightly smaller
+    window.pinkWire.scale.set(orb.scale.x * pinkScale, orb.scale.y * pinkScale, orb.scale.z * pinkScale);
+  }
+  
   // Sync cloud with orb
   if (window.orbCloud && orb){
     window.orbCloud.rotation.copy(orb.rotation);
@@ -654,10 +918,22 @@ function animate(time){
       window.orbParticles.material.uniforms.uTime.value = t;
       window.orbParticles.material.uniforms.uAmp.value = visualAmp;
     }
+    
+    // Update outer particle field
+    if (window.outerParticleField && window.outerParticleField.material.uniforms) {
+      window.outerParticleField.material.uniforms.uTime.value = t;
+      window.outerParticleField.material.uniforms.uAmp.value = visualAmp;
+    }
   }
 
   if (controls && controls.update) controls.update();
-  renderer.render(scene, camera);
+  
+  // Use EffectComposer with Bloom if available, otherwise fall back to regular render
+  if (composer) {
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
 }
 
 // Point ring globals
@@ -719,6 +995,14 @@ function onWindowResize(){
   camera.updateProjectionMatrix();
   renderer.setSize(cw, ch);
   uniforms.uResolution.value.set(cw, ch);
+  
+  // Update composer and bloom pass resolution
+  if (composer) {
+    composer.setSize(cw, ch);
+    if (bloomPass) {
+      bloomPass.setSize(cw, ch);
+    }
+  }
 }
 
 function startMic(){
@@ -808,6 +1092,12 @@ function toggleMicMute(){
     if (speechRecognition && recognitionActive){
       stopSpeechRecognition();
     }
+    // Ensure status stays "Muted" - don't let other functions override it
+    setTimeout(() => {
+      if (micMuted) {
+        setMicState('muted');
+      }
+    }, 100);
   } else {
     setMicState('on');
     if (micMode === 'stream' && !recognitionActive){
@@ -990,7 +1280,7 @@ function setupSpeechFeatures(){
 }
 
 function startSpeechRecognition(playChimeSound = false){
-  if (!speechRecognition || recognitionActive || micMode !== 'stream') return;
+  if (!speechRecognition || recognitionActive || micMode !== 'stream' || micMuted) return;
   try{
     speechRecognition.start();
     recognitionActive = true;
@@ -1886,8 +2176,8 @@ function handleRecognitionError(evt){
   recognitionActive = false;
   const err = evt && evt.error ? evt.error : 'unknown';
   console.warn('Speech recognition error:', err);
-  if (micMode !== 'off'){
-    // Auto‑recovery for transient errors
+  if (micMode !== 'off' && !micMuted){
+    // Auto‑recovery for transient errors (but not if mic is muted)
     const recoverable = (
       err === 'no-speech' ||
       err === 'audio-capture' ||
@@ -1958,6 +2248,15 @@ async function processVoiceCommand(raw){
     return;
   }
 
+  // Allow follow-up questions when context is active, even without wake phrase
+  // Process ANY command when context is active - handleCommandText will determine if it's a relevant follow-up
+  if (conversationContext.contextActive && conversationContext.lastCommandType) {
+    console.log('[Context] Processing follow-up without wake phrase:', text);
+    setListening(true);
+    await handleCommandText(raw, text);
+    return;
+  }
+
   if (!sessionActive){
     if (isWakePhrase(text)){
       await acknowledgeWake(raw);
@@ -1980,7 +2279,7 @@ async function respondWithWeather(location, heard){
   const now = Date.now();
   const cached = weatherCache.get(cacheKey);
 
-  // Serve from cache if recent enough
+  // Serve from cache if recent enough (offline mode support)
   if (cached && (now - cached.fetchedAt) < WEATHER_CACHE_TTL_MS) {
     const current = cached.data;
     const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
@@ -1988,13 +2287,31 @@ async function respondWithWeather(location, heard){
     const feels = current.FeelsLikeC || temp;
     const humidity = current.humidity;
     const responseText = `Weather in ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}, humidity ${humidity} percent.`;
+    
+    // Store context for follow-up questions
+    conversationContext.lastCommand = 'weather';
+    conversationContext.lastCommandType = 'weather';
+    conversationContext.lastLocation = location;
+    conversationContext.lastWeatherData = current;
+    activateContext();
+    
     deliverResponse(heard, responseText);
     return;
   }
 
-  // Check if offline
+  // Check if offline - use cached data if available
   if (!navigator.onLine) {
-    deliverResponse(heard, `I'm offline and can't fetch weather data. Please check your internet connection.`);
+    if (cached) {
+      // Use stale cache if offline
+      const current = cached.data;
+      const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
+      const temp = current.temp_C;
+      const feels = current.FeelsLikeC || temp;
+      const responseText = `Weather in ${displayLocation} (from cache): ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}. Note: This is cached data as I'm offline.`;
+      deliverResponse(heard, responseText);
+      return;
+    }
+    deliverResponse(heard, `I'm offline and don't have cached weather data for ${displayLocation}. Please check your internet connection.`);
     return;
   }
 
@@ -2019,16 +2336,196 @@ async function respondWithWeather(location, heard){
     const feels = current.FeelsLikeC || temp;
     const humidity = current.humidity;
     const responseText = `Weather in ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}, humidity ${humidity} percent.`;
+    
+    // Store context for follow-up questions
+    conversationContext.lastCommand = 'weather';
+    conversationContext.lastCommandType = 'weather';
+    conversationContext.lastLocation = location;
+    conversationContext.lastWeatherData = current;
+    activateContext();
+    
     deliverResponse(heard, responseText);
   }catch(err){
     console.warn('Weather lookup failed:', err);
+    
+    // Better error handling with retry suggestion and cached fallback
+    let errorMessage = '';
     if (err.name === 'AbortError') {
-      deliverResponse(heard, `Weather request timed out. I'm having trouble connecting to the weather service.`);
+      errorMessage = `Weather request timed out. I'm having trouble connecting to the weather service.`;
+      if (cached) {
+        const current = cached.data;
+        const temp = current.temp_C;
+        errorMessage += ` Using cached data: ${displayLocation} is ${temp} degrees Celsius.`;
+      }
     } else if (!navigator.onLine) {
-      deliverResponse(heard, `I'm offline and can't fetch weather data. Please check your internet connection.`);
+      // Try to use cached data if available
+      if (cached) {
+        const current = cached.data;
+        const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
+        const temp = current.temp_C;
+        errorMessage = `I'm offline. Using cached data: ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius.`;
+      } else {
+        errorMessage = `I'm offline and don't have cached weather data. Please check your internet connection.`;
+      }
     } else {
-      deliverResponse(heard, `I couldn't fetch the weather for ${displayLocation} just now.`);
+      errorMessage = `I couldn't fetch the weather for ${displayLocation}. `;
+      if (cached) {
+        const current = cached.data;
+        const temp = current.temp_C;
+        errorMessage += `Using cached data: ${temp} degrees Celsius.`;
+      } else {
+        errorMessage += `Please check your connection and try again.`;
+      }
     }
+    
+    deliverResponse(heard, errorMessage);
+  }
+}
+
+// Conversation context management
+function activateContext(){
+  conversationContext.contextActive = true;
+  if (conversationContext.contextTimeout) {
+    clearTimeout(conversationContext.contextTimeout);
+  }
+  conversationContext.contextTimeout = setTimeout(() => {
+    conversationContext.contextActive = false;
+    conversationContext.lastCommand = null;
+    conversationContext.lastCommandType = null;
+  }, CONTEXT_TIMEOUT);
+}
+
+// Reminders & Tasks functions
+function addReminder(text, hours, minutes){
+  const now = new Date();
+  const reminderTime = new Date();
+  reminderTime.setHours(hours, minutes, 0, 0);
+  if (reminderTime < now) {
+    reminderTime.setDate(reminderTime.getDate() + 1);
+  }
+  
+  const reminder = {
+    id: Date.now(),
+    text: text,
+    hours: hours,
+    minutes: minutes,
+    timestamp: reminderTime.getTime(),
+    completed: false
+  };
+  
+  reminders.push(reminder);
+  saveRemindersToStorage();
+  startReminderChecker();
+}
+
+function addTask(text){
+  const task = {
+    id: Date.now(),
+    text: text,
+    timestamp: Date.now(),
+    completed: false,
+    type: 'task'
+  };
+  
+  reminders.push(task);
+  saveRemindersToStorage();
+}
+
+function listReminders(heard){
+  const activeReminders = reminders.filter(r => !r.completed && r.type !== 'task');
+  const tasks = reminders.filter(r => !r.completed && r.type === 'task');
+  
+  if (activeReminders.length === 0 && tasks.length === 0) {
+    deliverResponse(heard, 'You have no active reminders or tasks.');
+    return;
+  }
+  
+  let response = '';
+  if (activeReminders.length > 0) {
+    response += `You have ${activeReminders.length} reminder${activeReminders.length > 1 ? 's' : ''}: `;
+    activeReminders.forEach((r, i) => {
+      const timeStr = formatTime12Hour(r.hours, r.minutes);
+      response += `${i + 1}. ${r.text} at ${timeStr}. `;
+    });
+  }
+  
+  if (tasks.length > 0) {
+    response += `You have ${tasks.length} task${tasks.length > 1 ? 's' : ''}: `;
+    tasks.forEach((t, i) => {
+      response += `${i + 1}. ${t.text}. `;
+    });
+  }
+  
+  deliverResponse(heard, response);
+}
+
+function listTasks(heard){
+  const tasks = reminders.filter(r => !r.completed && r.type === 'task');
+  if (tasks.length === 0) {
+    deliverResponse(heard, 'You have no active tasks.');
+    return;
+  }
+  
+  let response = `You have ${tasks.length} task${tasks.length > 1 ? 's' : ''}: `;
+  tasks.forEach((t, i) => {
+    response += `${i + 1}. ${t.text}. `;
+  });
+  
+  deliverResponse(heard, response);
+}
+
+function startReminderChecker(){
+  if (reminderCheckInterval) return;
+  
+  reminderCheckInterval = setInterval(() => {
+    const now = Date.now();
+    reminders.forEach(reminder => {
+      if (!reminder.completed && reminder.timestamp && reminder.timestamp <= now) {
+        reminder.completed = true;
+        const timeStr = formatTime12Hour(reminder.hours, reminder.minutes);
+        deliverResponse('', `Reminder: ${reminder.text}.`);
+        saveRemindersToStorage();
+      }
+    });
+    
+    // Clean up completed reminders older than 24 hours
+    const oneDayAgo = now - (24 * 60 * 60 * 1000);
+    reminders = reminders.filter(r => !r.completed || r.timestamp > oneDayAgo);
+    saveRemindersToStorage();
+  }, 1000); // Check every second
+}
+
+function saveRemindersToStorage(){
+  try {
+    localStorage.setItem('avril_reminders', JSON.stringify(reminders));
+  } catch(e) {
+    console.warn('Failed to save reminders to storage:', e);
+  }
+}
+
+function loadRemindersFromStorage(){
+  try {
+    const stored = localStorage.getItem('avril_reminders');
+    if (stored) {
+      reminders = JSON.parse(stored);
+      startReminderChecker();
+    }
+  } catch(e) {
+    console.warn('Failed to load reminders from storage:', e);
+  }
+}
+
+// Offline mode detection and network status
+function updateNetworkStatus(){
+  if (!networkStatusEl) return;
+  
+  if (!navigator.onLine) {
+    networkStatusEl.textContent = 'Offline';
+    networkStatusEl.style.color = '#ff6666';
+    updateStatusText('Offline mode');
+  } else {
+    networkStatusEl.textContent = 'Online';
+    networkStatusEl.style.color = '#66b3ff';
   }
 }
 
@@ -2074,6 +2571,47 @@ async function handleCommandText(raw, text){
   }
 
   const wordCount = keyText.split(' ').filter(Boolean).length;
+
+  // Conversation context: Handle follow-up questions
+  if (conversationContext.contextActive && conversationContext.lastCommandType === 'weather') {
+    // Follow-up questions about weather - be very flexible with detection
+    const isWeatherFollowUp = 
+      keyText.includes('tomorrow') || 
+      keyText.includes('forecast') || 
+      keyText.includes('later') || 
+      keyText.includes('again') || 
+      keyText.includes('repeat') ||
+      keyText === 'and' || 
+      keyText === 'what about' || 
+      keyText === 'how about' ||
+      keyText.startsWith('and ') ||
+      keyText.startsWith('what about') ||
+      keyText.startsWith('how about') ||
+      keyText.length <= 3; // Very short phrases are likely follow-ups
+    
+    if (isWeatherFollowUp) {
+      // Check for "tomorrow" or "forecast" requests
+      if (keyText.includes('tomorrow') || keyText.includes('forecast') || keyText.includes('later')) {
+        if (conversationContext.lastLocation) {
+          deliverResponse(raw, `I can check the forecast for ${conversationContext.lastLocation}, but I'll need to fetch that data. Would you like me to check?`);
+          activateContext(); // Keep context active for further follow-ups
+          return;
+        }
+      }
+      // Repeat last weather info
+      if (keyText.includes('again') || keyText.includes('repeat') || keyText.length <= 3) {
+        if (conversationContext.lastWeatherData && conversationContext.lastLocation) {
+          const current = conversationContext.lastWeatherData;
+          const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
+          const temp = current.temp_C;
+          const feels = current.FeelsLikeC || temp;
+          deliverResponse(raw, `Weather in ${conversationContext.lastLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}.`);
+          activateContext(); // Keep context active
+          return;
+        }
+      }
+    }
+  }
 
   // Conversation helper: user says "I have a question" to signal a new query
   if (keyText.startsWith('i have a question')){
@@ -2165,7 +2703,7 @@ async function handleCommandText(raw, text){
   }
 
   if (keyText.includes('command list') || keyText.includes('list of commands')){
-    const message = 'Here are your commands: say "Hello" to wake me, then you can ask "What time is it?", "What is the date today?", "What is the weather in" followed by a city, "Set alarm for" followed by a time like "7:30 AM", "Stop alarm" to stop the alarm, "Cancel alarm" to delete the alarm, "Snooze" to snooze the alarm for 5 minutes, "Show commands" to open the command list, "Close command list" to close it, or use any custom command you have saved.';
+    const message = 'Here are your commands: say "Hello", "Hey Avril", or "Wake up" to wake me, then you can ask "What time is it?", "What is the date today?", "What is the weather in" followed by a city (with follow-ups like "And tomorrow?"), "Set alarm for" followed by a time like "7:30 AM", "Stop alarm" to stop the alarm, "Cancel alarm" to delete the alarm, "Snooze" to snooze the alarm for 5 minutes, "Remind me to [task] at [time]" to set reminders, "List reminders" to see your reminders, "Tell me a joke" for a joke, "Mute" or "Unmute" to control the microphone, "Show commands" to open the command list, "Close command list" to close it, or use any custom command you have saved.';
     deliverResponse(raw, message);
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
@@ -2393,7 +2931,17 @@ function setMicState(state){
   const btn = document.getElementById('startBtn');
   if (btn){
     btn.classList.remove('idle','requesting','on','fallback','muted');
-  btn.classList.add(state);
+    btn.classList.add(state);
+    // Force red background when muted using inline style as fallback
+    if (state === 'muted') {
+      btn.style.background = 'linear-gradient(180deg, #cc0000, #990000)';
+      btn.style.color = '#ffffff';
+      btn.style.boxShadow = '0 8px 20px rgba(204, 0, 0, 0.5)';
+    } else {
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.boxShadow = '';
+    }
   if (state === 'requesting'){
     btn.setAttribute('aria-label','Requesting microphone access');
     btn.title = 'Requesting microphone access';
@@ -2416,7 +2964,9 @@ function setMicState(state){
   if (state === 'requesting') statusText = 'Requesting access';
   else if (state === 'on') statusText = 'Live listening';
   else if (state === 'fallback') statusText = 'Fallback tone';
-  else if (state === 'muted') statusText = 'Muted';
+  else if (state === 'muted') {
+    statusText = 'Muted';
+  }
   updateStatusText(statusText);
 }
 
@@ -2432,6 +2982,36 @@ function getAudioAmplitude(){
   for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
   const avg = sum / dataArray.length; // 0..255
   return avg / 255; // normalized 0..1
+}
+
+// Get frequency-based intensity for displacement "jump" effect
+function getFrequencyIntensity(){
+  if (!analyser || !dataArray) return 0;
+  analyser.getByteFrequencyData(dataArray);
+  
+  // Analyze frequency bands - focus on mid to high frequencies for "jump" effect
+  const lowEnd = Math.floor(dataArray.length * 0.1); // Lower 10%
+  const midEnd = Math.floor(dataArray.length * 0.5); // Up to 50%
+  const highEnd = dataArray.length; // All frequencies
+  
+  // Get peak values in different bands
+  let lowPeak = 0, midPeak = 0, highPeak = 0;
+  
+  for (let i = 0; i < lowEnd; i++) {
+    if (dataArray[i] > lowPeak) lowPeak = dataArray[i];
+  }
+  for (let i = lowEnd; i < midEnd; i++) {
+    if (dataArray[i] > midPeak) midPeak = dataArray[i];
+  }
+  for (let i = midEnd; i < highEnd; i++) {
+    if (dataArray[i] > highPeak) highPeak = dataArray[i];
+  }
+  
+  // Weight mid and high frequencies more (they create better "jump" effect)
+  const weightedIntensity = (lowPeak * 0.2 + midPeak * 0.4 + highPeak * 0.4) / 255;
+  
+  // Apply smoothing and threshold to avoid constant vibration
+  return Math.max(0, weightedIntensity - 0.1) * 1.5; // Normalize and amplify
 }
 
 // Orb vertex shader using simplex noise (GLSL)
@@ -2496,25 +3076,58 @@ function vertexShader(){
 
     void main(){
       vNormal = normal;
-      vPos = position;
+      
       float a = uAmp;
+      vec3 pos = position;
       
-      // Wavy Movement: Vertex shader displacement using 3D noise
-      float noiseScale = 1.4;
-      // 3D noise for wavy displacement
-      float n1 = snoise(position * noiseScale + vec3(0.0, uTime*0.5, uTime*0.3));
-      float n2 = snoise(position * noiseScale * 0.7 + vec3(uTime*0.3, 0.0, uTime*0.4));
-      float n3 = snoise(position * noiseScale * 0.4 + vec3(uTime*0.2, uTime*0.3, 0.0));
-      // Blend three 3D noise layers for organic wavy movement
-      float n = (n1 * 0.5 + n2 * 0.3 + n3 * 0.2);
+      // Dynamic energy-like motion: Higher frequency noise for energy pulsing (not water-like)
+      float timeScale = 0.8; // Increased from 0.3 for faster, more energetic motion
+      float noiseScale1 = 2.2; // Increased for higher frequency
+      float noiseScale2 = 3.0; // Increased for higher frequency
+      float noiseScale3 = 1.8; // Increased for higher frequency
       
-      // Deformation intensity increases with mouse hover
-      float baseDisplacement = 0.4;
-      float audioDisplacement = a * 1.0; // Strong audio reaction
-      float mouseDisplacement = uMouseIntensity * 0.3; // Mouse hover increases deformation
+      // Primary energy wave - faster, higher frequency
+      vec3 wave1 = pos * noiseScale1 + vec3(0.0, uTime * timeScale * 1.5, uTime * timeScale * 1.2);
+      float n1 = snoise(wave1);
+      
+      // Secondary energy wave - faster, higher frequency
+      vec3 wave2 = pos * noiseScale2 + vec3(uTime * timeScale * 1.8, 0.0, uTime * timeScale * 2.0);
+      float n2 = snoise(wave2);
+      
+      // Tertiary energy wave - fast, high frequency for energetic detail
+      vec3 wave3 = pos * noiseScale3 + vec3(uTime * timeScale * 2.5, uTime * timeScale * 2.2, 0.0);
+      float n3 = snoise(wave3);
+      
+      // Add swirling motion around the sphere
+      vec3 swirl = vec3(
+        sin(pos.y * 2.0 + uTime * timeScale) * 0.3,
+        cos(pos.z * 2.0 + uTime * timeScale * 0.8) * 0.3,
+        sin(pos.x * 2.0 + uTime * timeScale * 0.6) * 0.3
+      );
+      
+      // Blend noise layers for fluid, organic movement
+      float n = (n1 * 0.4 + n2 * 0.35 + n3 * 0.25);
+      
+      // Add swirling component
+      float swirlAmount = dot(normalize(pos), swirl) * 0.2;
+      n += swirlAmount;
+      
+      // Smooth the displacement for more fluid motion
+      n = smoothstep(-0.8, 0.8, n);
+      
+      // Deformation intensity - more subtle for bubble effect
+      float baseDisplacement = 0.25; // Reduced for smoother bubble
+      float audioDisplacement = a * 0.8; // Audio reaction
+      float mouseDisplacement = uMouseIntensity * 0.2; // Mouse hover
       float displacement = n * (baseDisplacement + audioDisplacement + mouseDisplacement);
       
+      // Apply displacement along normal for bubble-like expansion/contraction
       vec3 newPos = position + normal * displacement;
+      
+      // Update normal for proper lighting
+      vNormal = normalize(normalMatrix * normal);
+      vPos = (modelViewMatrix * vec4(newPos, 1.0)).xyz;
+      
       gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
     }
   `;
@@ -2590,6 +3203,7 @@ function fragmentShader(){
 // Points shaders
 function pointsVertexShader(){
   return `
+    attribute vec3 color;
     uniform float uTime;
     uniform float uAmp;
     varying vec3 vColor;
