@@ -109,7 +109,14 @@ function playStopChime(){
 const weatherCache = new Map(); // key: normalized location, value: { data, fetchedAt }
 const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-init();
+// Wait for Three.js to load before initializing
+(function waitForThree() {
+  if (typeof THREE !== 'undefined' && THREE) {
+    init();
+  } else {
+    setTimeout(waitForThree, 50);
+  }
+})();
 
 async function init(){
   signalBarEl = document.getElementById('signalBar');
@@ -139,8 +146,15 @@ async function init(){
   setupActivityTracking(); // Track mouse, keyboard, and other user activity
   resetIdleTimer();
 
-  // Once core features are wired up, move out of "Calibrating" into an idle state
-  updateStatusText('Idle');
+  // Once core features are wired up, move out of "Calibrating" into a ready state
+  // The status will update automatically when startMic() completes
+  updateStatusText('Ready');
+
+  // Check if Three.js is available before initializing 3D scene
+  if (typeof THREE === 'undefined' || !THREE) {
+    console.warn('Three.js not available — 3D orb will be disabled. Voice features still work.');
+    return;
+  }
 
   // Renderer
   renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
@@ -2021,7 +2035,7 @@ function setMicState(state){
   }
   }
 
-  let statusText = 'Idle';
+  let statusText = 'Ready';
   if (state === 'requesting') statusText = 'Requesting access';
   else if (state === 'on') statusText = 'Live listening';
   else if (state === 'fallback') statusText = 'Fallback tone';
