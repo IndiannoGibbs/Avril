@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes,viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <title>A.V.R.I.L — Audio Reactive UI</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
@@ -55,6 +60,74 @@
             <span class="voice-bar"></span>
             <span class="voice-bar"></span>
             <span class="voice-bar"></span>
+          </div>
+        </div>
+
+        <div id="weatherDisplay" class="weather-display" hidden>
+          <div class="weather-card">
+            <div class="weather-header">
+              <span class="weather-location" id="weatherLocation">Location</span>
+              <button class="weather-close" id="weatherClose" aria-label="Close weather">×</button>
+            </div>
+            <div class="weather-main">
+              <div class="weather-icon" id="weatherIcon">🌤️</div>
+              <div class="weather-temp">
+                <span class="weather-temp-value" id="weatherTemp">--</span>
+                <span class="weather-temp-unit">°C</span>
+              </div>
+              <div class="weather-condition" id="weatherCondition">Clear</div>
+            </div>
+            <div class="weather-details">
+              <div class="weather-detail">
+                <span class="weather-detail-label">Feels like</span>
+                <span class="weather-detail-value" id="weatherFeels">--°C</span>
+              </div>
+              <div class="weather-detail">
+                <span class="weather-detail-label">Humidity</span>
+                <span class="weather-detail-value" id="weatherHumidity">--%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="reminderDisplay" class="reminder-display" hidden>
+          <div class="reminder-card">
+            <div class="reminder-header">
+              <span class="reminder-icon">⏰</span>
+              <span class="reminder-title" id="reminderTitle">Reminder</span>
+              <button class="reminder-close" id="reminderClose" aria-label="Close reminder">×</button>
+            </div>
+            <div class="reminder-content">
+              <div class="reminder-text" id="reminderText">Reminder text</div>
+              <div class="reminder-time" id="reminderTime">Time</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="remindersListDisplay" class="reminders-list-display" hidden>
+          <div class="reminders-list-card">
+            <div class="reminders-list-header">
+              <span class="reminders-list-icon">📋</span>
+              <span class="reminders-list-title">Reminders List</span>
+              <button class="reminders-list-close" id="remindersListClose" aria-label="Close reminders list">×</button>
+            </div>
+            <div class="reminders-list-content" id="remindersListContent">
+              <!-- Reminders will be dynamically inserted here -->
+            </div>
+          </div>
+        </div>
+
+        <div id="timerDisplay" class="timer-display" hidden>
+          <div class="timer-card">
+            <div class="timer-header">
+              <span class="timer-icon">⏱️</span>
+              <span class="timer-title">Timer</span>
+              <button class="timer-close" id="timerClose" aria-label="Close timer">×</button>
+            </div>
+            <div class="timer-content">
+              <div class="timer-time" id="timerTime">00:00:00</div>
+              <div class="timer-status" id="timerStatus">Stopped</div>
+            </div>
           </div>
         </div>
       </main>
@@ -202,6 +275,36 @@
     </div>
 
     <script>
+      // Polyfills for older Android browsers (4.4+)
+      (function() {
+        // Polyfill for getUserMedia for older Android browsers
+        if (!navigator.mediaDevices) {
+          navigator.mediaDevices = {};
+        }
+        
+        if (!navigator.mediaDevices.getUserMedia) {
+          navigator.mediaDevices.getUserMedia = function(constraints) {
+            var getUserMedia = navigator.getUserMedia || 
+                              navigator.webkitGetUserMedia || 
+                              navigator.mozGetUserMedia || 
+                              navigator.msGetUserMedia;
+            
+            if (!getUserMedia) {
+              return Promise.reject(new Error('getUserMedia is not supported in this browser'));
+            }
+            
+            return new Promise(function(resolve, reject) {
+              getUserMedia.call(navigator, constraints, resolve, reject);
+            });
+          };
+        }
+        
+        // Ensure AudioContext is available with webkit prefix for older browsers
+        if (!window.AudioContext && window.webkitAudioContext) {
+          window.AudioContext = window.webkitAudioContext;
+        }
+      })();
+      
       // Prefer local Three.js / OrbitControls when available, fall back to CDN.
       (function () {
         function loadScript(src, options) {

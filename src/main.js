@@ -34,6 +34,13 @@ let mouseX = 0, mouseY = 0;
 let mouseIntensity = 0; // Mouse hover intensity for deformation
 let sleepScreenEl, sleepTimeEl, sleepDateEl;
 let alarmIndicatorEl, alarmTimeDisplayEl;
+let weatherDisplayEl, weatherLocationEl, weatherIconEl, weatherTempEl, weatherConditionEl, weatherFeelsEl, weatherHumidityEl, weatherCloseBtn;
+let reminderDisplayEl, reminderTitleEl, reminderTextEl, reminderTimeEl, reminderCloseBtn;
+let remindersListDisplayEl, remindersListContentEl, remindersListCloseBtn;
+let timerDisplayEl, timerTimeEl, timerStatusEl, timerCloseBtn;
+let timerInterval = null;
+let timerSeconds = 0;
+let timerActive = false;
 let idleTimer = null;
 let lastActivityTime = Date.now();
 const IDLE_TIMEOUT = 10000; // 10 seconds
@@ -58,7 +65,10 @@ let conversationContext = {
   lastLocation: null,
   lastWeatherData: null,
   contextActive: false,
-  contextTimeout: null
+  contextTimeout: null,
+  pendingForecastRequest: false, // Track if we're waiting for yes/no to forecast question
+  pendingAddAnotherReminder: false, // Track if we're waiting for yes/no to add another reminder
+  pendingShowReminderList: false // Track if we're waiting for yes/no to show reminder list
 };
 const CONTEXT_TIMEOUT = 30000; // 30 seconds for context to remain active
 
@@ -178,6 +188,62 @@ async function init(){
   sleepDateEl = document.getElementById('sleepDate');
   alarmIndicatorEl = document.getElementById('alarmIndicator');
   alarmTimeDisplayEl = document.getElementById('alarmTimeDisplay');
+  weatherDisplayEl = document.getElementById('weatherDisplay');
+  weatherLocationEl = document.getElementById('weatherLocation');
+  weatherIconEl = document.getElementById('weatherIcon');
+  weatherTempEl = document.getElementById('weatherTemp');
+  weatherConditionEl = document.getElementById('weatherCondition');
+  weatherFeelsEl = document.getElementById('weatherFeels');
+  weatherHumidityEl = document.getElementById('weatherHumidity');
+  weatherCloseBtn = document.getElementById('weatherClose');
+  reminderDisplayEl = document.getElementById('reminderDisplay');
+  reminderTitleEl = document.getElementById('reminderTitle');
+  reminderTextEl = document.getElementById('reminderText');
+  reminderTimeEl = document.getElementById('reminderTime');
+  reminderCloseBtn = document.getElementById('reminderClose');
+  remindersListDisplayEl = document.getElementById('remindersListDisplay');
+  remindersListContentEl = document.getElementById('remindersListContent');
+  remindersListCloseBtn = document.getElementById('remindersListClose');
+  timerDisplayEl = document.getElementById('timerDisplay');
+  timerTimeEl = document.getElementById('timerTime');
+  timerStatusEl = document.getElementById('timerStatus');
+  timerCloseBtn = document.getElementById('timerClose');
+  
+  // Setup timer close button
+  if (timerCloseBtn) {
+    timerCloseBtn.addEventListener('click', hideTimerDisplay);
+    timerCloseBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      hideTimerDisplay();
+    }, false);
+  }
+  
+  // Setup reminders list close button
+  if (remindersListCloseBtn) {
+    remindersListCloseBtn.addEventListener('click', hideRemindersListDisplay);
+    remindersListCloseBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      hideRemindersListDisplay();
+    }, false);
+  }
+  
+  // Setup weather display close button
+  if (weatherCloseBtn) {
+    weatherCloseBtn.addEventListener('click', hideWeatherDisplay);
+    weatherCloseBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      hideWeatherDisplay();
+    }, false);
+  }
+  
+  // Setup reminder display close button
+  if (reminderCloseBtn) {
+    reminderCloseBtn.addEventListener('click', hideReminderDisplay);
+    reminderCloseBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      hideReminderDisplay();
+    }, false);
+  }
   
   // Load reminders from storage
   loadRemindersFromStorage();
@@ -802,10 +868,20 @@ async function init(){
   const startBtn = document.getElementById('startBtn');
   if (startBtn) {
     startBtn.addEventListener('click', handleMicButton);
+    // Add touch handler for mobile - prevent double-tap zoom
+    // Use traditional event listener for better compatibility with older Android browsers
+    startBtn.addEventListener('touchend', function(evt) {
+      evt.preventDefault();
+      handleMicButton(evt);
+    }, false);
   } else {
     console.warn('startBtn not found in DOM');
     showDiag('Start button not found', true);
   }
+  
+  // Prevent double-tap zoom on interactive elements
+  setupMobileTouchHandlers();
+  
   setupSettingsPanel();
 
   // Attempt to keep microphone on automatically
@@ -1010,42 +1086,97 @@ function startMic(){
   if (micMode !== 'off') { diag('Microphone already active'); return; }
   const btn = document.getElementById('startBtn');
   if (btn){ setMicState('requesting'); btn.disabled = true; }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+  
+  // Check for getUserMedia support with fallbacks for older browsers
+  var getUserMedia = null;
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  } else {
+    var legacyGetUserMedia = navigator.getUserMedia || 
+                             navigator.webkitGetUserMedia || 
+                             navigator.mozGetUserMedia || 
+                             navigator.msGetUserMedia;
+    if (legacyGetUserMedia) {
+      getUserMedia = function(constraints) {
+        return new Promise(function(resolve, reject) {
+          legacyGetUserMedia.call(navigator, constraints, resolve, reject);
+        });
+      };
+    }
+  }
+  
+  if (!getUserMedia) {
     diag('getUserMedia not available in this browser', true);
-    // Graceful HUD hint instead of visible assistant bubble text
     updateStatusText('Voice mic unavailable in this browser');
-    if (btn) btn.disabled = false;
+    if (btn) { setMicState('idle'); btn.disabled = false; }
     return;
   }
-  navigator.mediaDevices.getUserMedia({
+  
+  // Audio constraints - simplified for older Android devices
+  var audioConstraints = {
     audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      echoCancellation: false, // Disable for better compatibility on older devices
+      noiseSuppression: false, // Disable for better compatibility
+      autoGainControl: false,  // Disable for better compatibility
       channelCount: 1
     }
-  }).then(stream => {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // resume context in case browser requires user gesture
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    sourceNode = audioCtx.createMediaStreamSource(stream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;
-    const bufferLength = analyser.frequencyBinCount;
-    dataArray = new Uint8Array(bufferLength);
-    sourceNode.connect(analyser);
-    mediaStream = stream;
-    micMode = 'stream';
-    diag('Microphone streaming — OK');
-    if (btn){ setMicState('on'); btn.disabled = false; }
-    startSpeechRecognition(true); // Play chime on initial mic start
+  };
+  
+  // Try with simpler constraints first for better compatibility
+  getUserMedia(audioConstraints).then(stream => {
+    try {
+      // Create AudioContext with fallback for older browsers
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error('AudioContext not supported');
+      }
+      
+      audioCtx = new AudioContextClass();
+      
+      // Resume context - required for mobile browsers after user interaction
+      if (audioCtx.state === 'suspended') {
+        if (typeof audioCtx.resume === 'function') {
+          // Modern browsers - resume() returns a promise
+          audioCtx.resume().catch(function(err) {
+            console.warn('Failed to resume audio context:', err);
+          });
+        }
+        // Note: Older browsers may not have resume() method, but audio context
+        // should still work when user interaction triggers it
+      }
+      
+      sourceNode = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      const bufferLength = analyser.frequencyBinCount;
+      dataArray = new Uint8Array(bufferLength);
+      sourceNode.connect(analyser);
+      mediaStream = stream;
+      micMode = 'stream';
+      diag('Microphone streaming — OK');
+      if (btn){ setMicState('on'); btn.disabled = false; }
+      startSpeechRecognition(true); // Play chime on initial mic start
+    } catch (err) {
+      console.error('Audio context creation failed:', err);
+      throw err;
+    }
   }).catch(err => {
     console.warn('Microphone access denied or error:', err);
     diag('Microphone denied or error — falling back to oscillator', true);
     // fallback: oscillator
     try{
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error('AudioContext not supported');
+      }
+      audioCtx = new AudioContextClass();
+      if (audioCtx.state === 'suspended') {
+        if (typeof audioCtx.resume === 'function') {
+          audioCtx.resume().catch(function(e) {
+            console.warn('Failed to resume audio context:', e);
+          });
+        }
+      }
       const osc = audioCtx.createOscillator();
       osc.type = 'sine';
       osc.frequency.value = 220;
@@ -1054,7 +1185,6 @@ function startMic(){
       dataArray = new Uint8Array(analyser.frequencyBinCount);
       osc.connect(analyser);
       // Don't connect to destination - keep it silent, only for visual effects
-      // analyser.connect(audioCtx.destination); // Removed - no audio output
       osc.start();
       fallbackOsc = osc;
       micMode = 'fallback';
@@ -1143,6 +1273,59 @@ function stopMic(){
   diag('Microphone stopped');
 }
 
+// Setup mobile touch handlers to prevent double-tap zoom and improve touch responsiveness
+function setupMobileTouchHandlers(){
+  // Prevent double-tap zoom on buttons and interactive elements
+  var lastTouchEnd = 0;
+  document.addEventListener('touchend', function(event) {
+    var now = (Date.now && Date.now()) || (new Date().getTime());
+    if (now - lastTouchEnd <= 300) {
+      event.preventDefault();
+    }
+    lastTouchEnd = now;
+  }, false);
+  
+  // Add touch handlers to all buttons to prevent zoom
+  var buttons = document.querySelectorAll('button');
+  buttons.forEach(function(button) {
+    // Prevent zoom on double tap for buttons
+    // Use traditional event listener for better compatibility
+    button.addEventListener('touchend', function(evt) {
+      // Only prevent default if it's a single tap, not a scroll
+      if (evt.changedTouches && evt.changedTouches.length === 1) {
+        var touch = evt.changedTouches[0];
+        var target = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (target === button || button.contains(target)) {
+          // Small delay to ensure click event fires on mobile
+          setTimeout(function() {
+            if (!button.disabled) {
+              button.click();
+            }
+          }, 0);
+        }
+      }
+    }, false);
+  });
+  
+  // Prevent pull-to-refresh on mobile
+  var touchStartY = 0;
+  document.addEventListener('touchstart', function(evt) {
+    if (evt.touches && evt.touches.length === 1) {
+      touchStartY = evt.touches[0].clientY;
+    }
+  }, false);
+  
+  document.addEventListener('touchmove', function(evt) {
+    // Prevent pull-to-refresh when scrolling down from top
+    if (window.scrollY === 0 && evt.touches && evt.touches.length === 1) {
+      var touchY = evt.touches[0].clientY;
+      if (touchY > touchStartY) {
+        evt.preventDefault();
+      }
+    }
+  }, false);
+}
+
 function handleMicButton(evt){
   if (evt) evt.preventDefault();
   resetIdleTimer(); // Reset idle timer on UI interaction
@@ -1190,6 +1373,15 @@ function setupSettingsPanel(){
     if (settingsPanel.hasAttribute('hidden')) openPanel();
     else closePanel();
   });
+  
+  // Add touch handler for mobile - use traditional syntax for compatibility
+  settingsBtn.addEventListener('touchend', function(evt) {
+    evt.stopPropagation();
+    evt.preventDefault();
+    resetIdleTimer();
+    if (settingsPanel.hasAttribute('hidden')) openPanel();
+    else closePanel();
+  }, false);
 
   // Close button handler
   if (closeSettingsBtn) {
@@ -1198,6 +1390,14 @@ function setupSettingsPanel(){
       resetIdleTimer(); // Reset idle timer on UI interaction
       closePanel();
     });
+    
+    // Add touch handler for mobile - use traditional syntax for compatibility
+    closeSettingsBtn.addEventListener('touchend', function(evt) {
+      evt.stopPropagation();
+      evt.preventDefault();
+      resetIdleTimer();
+      closePanel();
+    }, false);
   }
 
   document.addEventListener('click', (evt) => {
@@ -1533,6 +1733,12 @@ function setupCustomCommandsUI(){
       listEl.appendChild(li);
     });
   }
+  
+  // Store renderCustomCommands so it can be called when commands are added via voice
+  window.renderCustomCommands = renderCustomCommands;
+
+  // Store renderCustomCommands globally so it can be called when commands are added dynamically
+  window.renderCustomCommands = renderCustomCommands;
 
   renderCustomCommands();
 
@@ -1559,6 +1765,10 @@ function setupCustomCommandsUI(){
 
     saveCustomCommands();
     renderCustomCommands();
+    // Also update if function is stored globally (for dynamic updates)
+    if (window.renderCustomCommands) {
+      window.renderCustomCommands();
+    }
     phraseInput.value = '';
     responseInput.value = '';
     editingIndex = null;
@@ -1754,7 +1964,7 @@ function checkAlarm(){
   if (timeUntilNotification >= 0 && timeUntilNotification < 60000 && !alarmNotificationShown) {
     alarmNotificationShown = true;
     const timeStr = formatTime12Hour(targetHours, targetMinutes);
-    speakResponse(`Alarm set for ${timeStr} will go off in 5 minutes.`);
+    speakResponse(`Alarm notification: ${timeStr} in 5 minutes.`);
   }
   
   // Check if alarm time has been reached (within 2 second window for reliability)
@@ -1807,23 +2017,36 @@ async function triggerAlarm(){
     if (cached && (nowMs - cached.fetchedAt) < WEATHER_CACHE_TTL_MS) {
       const current = cached.data;
       const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-      const temp = current.temp_C;
+      const temp = current.temp_C != null ? current.temp_C : 'unknown';
       weatherMsg = ` The weather in ${defaultLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius.`;
     } else if (navigator.onLine) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
-        const response = await fetch(`https://wttr.in/${encodeURIComponent(defaultLocation)}?format=j1`, {
-          signal: controller.signal
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+        
+        // Use CORS proxy for wttr.in to avoid CORS issues
+        const wttrUrl = `https://wttr.in/${encodeURIComponent(defaultLocation)}?format=j1`;
+        const apiUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(wttrUrl)}`;
+        
+        const response = await fetch(apiUrl, {
+          signal: controller.signal,
+          cache: 'no-cache'
         });
+        
         clearTimeout(timeoutId);
-        if (response.ok) {
-          const data = await response.json();
+        if (response && response.ok) {
+          const text = await response.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch (parseError) {
+            throw new Error('Failed to parse weather data');
+          }
           const current = data && data.current_condition && data.current_condition[0];
           if (current) {
             weatherCache.set(cacheKey, { data: current, fetchedAt: nowMs });
             const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-            const temp = current.temp_C;
+            const temp = current.temp_C != null ? current.temp_C : 'unknown';
             weatherMsg = ` The weather in ${defaultLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius.`;
           }
         }
@@ -1835,7 +2058,7 @@ async function triggerAlarm(){
       weatherMsg = ' The weather is pleasant today.';
     }
     
-    speakResponse(`Good morning. It is ${timeStr}.${weatherMsg}`);
+    speakResponse(`It is ${timeStr}.${weatherMsg}`);
   }, 2000);
 }
 
@@ -1843,6 +2066,124 @@ function formatTime12Hour(hours, minutes){
   const hours12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
   const ampm = hours >= 12 ? 'PM' : 'AM';
   return `${String(hours12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${ampm}`;
+}
+
+// Format seconds to HH:MM:SS
+function formatTimerTime(seconds){
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+// Parse timer duration from text (e.g., "5 minutes", "1 hour", "30 seconds")
+function parseTimerDuration(text){
+  const lowerText = text.toLowerCase().trim();
+  
+  // Pattern: number + unit (minutes, seconds, hours, min, sec, hr, h, m, s)
+  const patterns = [
+    /(\d+)\s*(?:hour|hours|hr|hrs|h)\s*(?:and\s*)?(\d+)?\s*(?:minute|minutes|min|mins|m)?/i,
+    /(\d+)\s*(?:minute|minutes|min|mins|m)\s*(?:and\s*)?(\d+)?\s*(?:second|seconds|sec|secs|s)?/i,
+    /(\d+)\s*(?:second|seconds|sec|secs|s)/i,
+    /(\d+)\s*(?:minute|minutes|min|mins|m)/i,
+    /(\d+)\s*(?:hour|hours|hr|hrs|h)/i,
+  ];
+  
+  for (const pattern of patterns) {
+    const match = lowerText.match(pattern);
+    if (match) {
+      let totalSeconds = 0;
+      
+      // Check if it's hours and minutes format
+      if (match[2] !== undefined && match[2] !== '') {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        totalSeconds = (hours * 3600) + (minutes * 60);
+      } else {
+        const value = parseInt(match[1], 10);
+        
+        if (lowerText.includes('hour') || lowerText.includes('hr') || lowerText.includes('h')) {
+          totalSeconds = value * 3600;
+        } else if (lowerText.includes('minute') || lowerText.includes('min') || lowerText.includes('m')) {
+          totalSeconds = value * 60;
+        } else if (lowerText.includes('second') || lowerText.includes('sec') || lowerText.includes('s')) {
+          totalSeconds = value;
+        } else {
+          // Default to minutes if no unit specified
+          totalSeconds = value * 60;
+        }
+      }
+      
+      if (totalSeconds > 0) {
+        return totalSeconds;
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Timer functions
+function setTimer(seconds){
+  stopTimer();
+  timerSeconds = seconds;
+  timerActive = false;
+  updateTimerDisplay();
+  showTimerDisplay();
+}
+
+function startTimer(){
+  if (timerSeconds <= 0) return;
+  
+  timerActive = true;
+  if (timerStatusEl) timerStatusEl.textContent = 'Running';
+  
+  timerInterval = setInterval(() => {
+    if (timerSeconds > 0) {
+      timerSeconds--;
+      updateTimerDisplay();
+    } else {
+      // Timer finished
+      stopTimer();
+      if (timerStatusEl) timerStatusEl.textContent = 'Finished';
+      deliverResponse('', 'Timer complete.');
+      playStartChime(); // Play chime when timer finishes
+    }
+  }, 1000);
+}
+
+function stopTimer(){
+  timerActive = false;
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  if (timerStatusEl) {
+    if (timerSeconds > 0) {
+      timerStatusEl.textContent = 'Stopped';
+    } else {
+      timerStatusEl.textContent = 'Finished';
+    }
+  }
+}
+
+function updateTimerDisplay(){
+  if (timerTimeEl) {
+    timerTimeEl.textContent = formatTimerTime(timerSeconds);
+  }
+}
+
+function showTimerDisplay(){
+  if (timerDisplayEl) {
+    timerDisplayEl.removeAttribute('hidden');
+  }
+}
+
+function hideTimerDisplay(){
+  if (timerDisplayEl) {
+    timerDisplayEl.setAttribute('hidden', '');
+  }
+  stopTimer();
 }
 
 function parseAlarmTime(text){
@@ -2134,7 +2475,7 @@ function announceCurrentTime(){
       minute: '2-digit',
       hour12: true
     });
-    speakResponse(`The time is ${timeStr}.`);
+    speakResponse(`${timeStr}.`);
   }catch(e){
     console.warn('Failed to announce time:', e);
   }
@@ -2234,7 +2575,7 @@ async function processVoiceCommand(raw){
 
   if (keyText === 'mute' || keyText.includes('mute mic') || keyText.includes('mute microphone') || keyText === 'unmute' || keyText.includes('unmute mic')){
     toggleMicMute();
-    const response = micMuted ? 'Microphone muted.' : 'Microphone unmuted.';
+    const response = micMuted ? 'Microphone disabled.' : 'Microphone enabled.';
     deliverResponse(raw, response);
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
@@ -2252,6 +2593,8 @@ async function processVoiceCommand(raw){
   // Process ANY command when context is active - handleCommandText will determine if it's a relevant follow-up
   if (conversationContext.contextActive && conversationContext.lastCommandType) {
     console.log('[Context] Processing follow-up without wake phrase:', text);
+    // Ensure session is active when context is active
+    sessionActive = true;
     setListening(true);
     await handleCommandText(raw, text);
     return;
@@ -2270,6 +2613,57 @@ async function processVoiceCommand(raw){
   await handleCommandText(raw, text);
 }
 
+// Get weather icon based on condition description
+function getWeatherIcon(description){
+  if (!description) return '🌤️';
+  const desc = description.toLowerCase();
+  if (desc.includes('sunny') || desc.includes('clear')) return '☀️';
+  if (desc.includes('cloud') && !desc.includes('overcast')) return '⛅';
+  if (desc.includes('overcast')) return '☁️';
+  if (desc.includes('rain') || desc.includes('shower')) return '🌧️';
+  if (desc.includes('thunder') || desc.includes('storm')) return '⛈️';
+  if (desc.includes('snow')) return '❄️';
+  if (desc.includes('fog') || desc.includes('mist')) return '🌫️';
+  if (desc.includes('wind')) return '💨';
+  return '🌤️';
+}
+
+// Display weather data in the visualization
+function displayWeatherData(location, weatherData){
+  if (!weatherDisplayEl || !weatherData) return;
+  
+  const displayLocation = location.split(' ').map(word => {
+    return word ? word[0].toUpperCase() + word.slice(1) : '';
+  }).join(' ');
+  
+  const desc = weatherData.weatherDesc && weatherData.weatherDesc[0] ? weatherData.weatherDesc[0].value : 'Unknown';
+  const temp = weatherData.temp_C != null ? weatherData.temp_C : '--';
+  const feels = weatherData.FeelsLikeC != null ? weatherData.FeelsLikeC : temp;
+  const humidity = weatherData.humidity != null ? weatherData.humidity : '--';
+  
+  if (weatherLocationEl) weatherLocationEl.textContent = displayLocation;
+  if (weatherIconEl) weatherIconEl.textContent = getWeatherIcon(desc);
+  if (weatherTempEl) weatherTempEl.textContent = temp;
+  if (weatherConditionEl) weatherConditionEl.textContent = desc;
+  if (weatherFeelsEl) weatherFeelsEl.textContent = `${feels}°C`;
+  if (weatherHumidityEl) weatherHumidityEl.textContent = `${humidity}%`;
+  
+  // Show the weather display
+  weatherDisplayEl.removeAttribute('hidden');
+  
+  // Auto-hide after 15 seconds
+  setTimeout(() => {
+    hideWeatherDisplay();
+  }, 15000);
+}
+
+// Hide weather display
+function hideWeatherDisplay(){
+  if (weatherDisplayEl) {
+    weatherDisplayEl.setAttribute('hidden', '');
+  }
+}
+
 async function respondWithWeather(location, heard){
   const displayLocation = location.split(' ').map(word => {
     return word ? word[0].toUpperCase() + word.slice(1) : '';
@@ -2283,10 +2677,10 @@ async function respondWithWeather(location, heard){
   if (cached && (now - cached.fetchedAt) < WEATHER_CACHE_TTL_MS) {
     const current = cached.data;
     const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-    const temp = current.temp_C;
-    const feels = current.FeelsLikeC || temp;
-    const humidity = current.humidity;
-    const responseText = `Weather in ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}, humidity ${humidity} percent.`;
+    const temp = current.temp_C != null ? current.temp_C : 'unknown';
+    const feels = current.FeelsLikeC != null ? current.FeelsLikeC : temp;
+    const humidity = current.humidity != null ? current.humidity : 'unknown';
+    const responseText = `${displayLocation}: ${desc.toLowerCase()}, ${temp}°C. Feels like ${feels}°C. Humidity ${humidity}%.`;
     
     // Store context for follow-up questions
     conversationContext.lastCommand = 'weather';
@@ -2294,6 +2688,9 @@ async function respondWithWeather(location, heard){
     conversationContext.lastLocation = location;
     conversationContext.lastWeatherData = current;
     activateContext();
+    
+    // Display weather visualization
+    displayWeatherData(location, current);
     
     deliverResponse(heard, responseText);
     return;
@@ -2305,8 +2702,8 @@ async function respondWithWeather(location, heard){
       // Use stale cache if offline
       const current = cached.data;
       const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-      const temp = current.temp_C;
-      const feels = current.FeelsLikeC || temp;
+      const temp = current.temp_C != null ? current.temp_C : 'unknown';
+      const feels = current.FeelsLikeC != null ? current.FeelsLikeC : temp;
       const responseText = `Weather in ${displayLocation} (from cache): ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}. Note: This is cached data as I'm offline.`;
       deliverResponse(heard, responseText);
       return;
@@ -2315,16 +2712,33 @@ async function respondWithWeather(location, heard){
     return;
   }
 
-  showResponse(`Checking weather for ${displayLocation}…`, heard, false); // Short message, no subtitle
+  // Show fetching message silently to avoid duplication - only final result will be spoken
+  showResponse(`Retrieving weather data for ${displayLocation}.`, heard, false);
   try{
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 second timeout for snappier failures
-    const response = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1`, {
-      signal: controller.signal
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
+    // Use CORS proxy for wttr.in to avoid CORS issues
+    const wttrUrl = `https://wttr.in/${encodeURIComponent(location)}?format=j1`;
+    const apiUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(wttrUrl)}`;
+    
+    const response = await fetch(apiUrl, {
+      signal: controller.signal,
+      cache: 'no-cache'
     });
+    
     clearTimeout(timeoutId);
-    if (!response.ok) throw new Error(`Weather request failed: ${response.status}`);
-    const data = await response.json();
+    if (!response || !response.ok) {
+      throw new Error(`Weather request failed: ${response ? response.status : 'no response'}`);
+    }
+    
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error('Failed to parse weather data');
+    }
     const current = data && data.current_condition && data.current_condition[0];
     if (!current) throw new Error('No current weather data.');
 
@@ -2332,10 +2746,10 @@ async function respondWithWeather(location, heard){
     weatherCache.set(cacheKey, { data: current, fetchedAt: now });
 
     const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-    const temp = current.temp_C;
-    const feels = current.FeelsLikeC || temp;
-    const humidity = current.humidity;
-    const responseText = `Weather in ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}, humidity ${humidity} percent.`;
+    const temp = current.temp_C != null ? current.temp_C : 'unknown';
+    const feels = current.FeelsLikeC != null ? current.FeelsLikeC : temp;
+    const humidity = current.humidity != null ? current.humidity : 'unknown';
+    const responseText = `${displayLocation}: ${desc.toLowerCase()}, ${temp}°C. Feels like ${feels}°C. Humidity ${humidity}%.`;
     
     // Store context for follow-up questions
     conversationContext.lastCommand = 'weather';
@@ -2344,6 +2758,9 @@ async function respondWithWeather(location, heard){
     conversationContext.lastWeatherData = current;
     activateContext();
     
+    // Display weather visualization
+    displayWeatherData(location, current);
+    
     deliverResponse(heard, responseText);
   }catch(err){
     console.warn('Weather lookup failed:', err);
@@ -2351,31 +2768,32 @@ async function respondWithWeather(location, heard){
     // Better error handling with retry suggestion and cached fallback
     let errorMessage = '';
     if (err.name === 'AbortError') {
-      errorMessage = `Weather request timed out. I'm having trouble connecting to the weather service.`;
+      errorMessage = `Weather request timed out. Weather service unavailable.`;
       if (cached) {
         const current = cached.data;
-        const temp = current.temp_C;
-        errorMessage += ` Using cached data: ${displayLocation} is ${temp} degrees Celsius.`;
+        const temp = current.temp_C != null ? current.temp_C : 'unknown';
+        errorMessage += ` Using cached data: ${displayLocation}, ${temp}°C.`;
       }
     } else if (!navigator.onLine) {
       // Try to use cached data if available
       if (cached) {
         const current = cached.data;
         const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-        const temp = current.temp_C;
-        errorMessage = `I'm offline. Using cached data: ${displayLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius.`;
+        const temp = current.temp_C != null ? current.temp_C : 'unknown';
+        errorMessage = `Offline. Using cached data: ${displayLocation}, ${desc.toLowerCase()}, ${temp}°C.`;
       } else {
-        errorMessage = `I'm offline and don't have cached weather data. Please check your internet connection.`;
+        errorMessage = `Offline. No cached weather data available. Check network connection.`;
       }
     } else {
-      errorMessage = `I couldn't fetch the weather for ${displayLocation}. `;
+      errorMessage = `Unable to retrieve weather data for ${displayLocation}. Weather service unavailable. `;
       if (cached) {
         const current = cached.data;
-        const temp = current.temp_C;
-        errorMessage += `Using cached data: ${temp} degrees Celsius.`;
+        const temp = current.temp_C != null ? current.temp_C : 'unknown';
+        errorMessage += `Using cached data: ${temp}°C.`;
       } else {
-        errorMessage += `Please check your connection and try again.`;
+        errorMessage += `Check network connection and retry.`;
       }
+      console.warn('Weather API error details:', err);
     }
     
     deliverResponse(heard, errorMessage);
@@ -2392,16 +2810,62 @@ function activateContext(){
     conversationContext.contextActive = false;
     conversationContext.lastCommand = null;
     conversationContext.lastCommandType = null;
+    conversationContext.pendingForecastRequest = false;
+    conversationContext.pendingAddAnotherReminder = false;
+    conversationContext.pendingShowReminderList = false;
   }, CONTEXT_TIMEOUT);
 }
 
+// Parse day name from text (e.g., "monday", "tuesday", "today", "tomorrow")
+function parseDay(text){
+  if (!text) return null;
+  const lowerText = text.toLowerCase().trim();
+  const dayMap = {
+    'sunday': 0, 'monday': 1, 'tuesday': 2, 'wednesday': 3,
+    'thursday': 4, 'friday': 5, 'saturday': 6,
+    'today': null, 'tomorrow': null
+  };
+  
+  for (const day in dayMap) {
+    if (lowerText.includes(day)) {
+      if (day === 'today') return new Date();
+      if (day === 'tomorrow') {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        return tomorrow;
+      }
+      const now = new Date();
+      const targetDay = dayMap[day];
+      const currentDay = now.getDay();
+      const daysUntil = (targetDay - currentDay + 7) % 7;
+      const targetDate = new Date(now);
+      targetDate.setDate(now.getDate() + (daysUntil === 0 ? 7 : daysUntil));
+      return targetDate;
+    }
+  }
+  return null;
+}
+
 // Reminders & Tasks functions
-function addReminder(text, hours, minutes){
+function addReminder(text, hours, minutes, dayOffset = null){
   const now = new Date();
-  const reminderTime = new Date();
-  reminderTime.setHours(hours, minutes, 0, 0);
-  if (reminderTime < now) {
-    reminderTime.setDate(reminderTime.getDate() + 1);
+  let reminderTime;
+  
+  if (dayOffset !== null) {
+    // dayOffset is a Date object for specific day
+    reminderTime = new Date(dayOffset);
+    reminderTime.setHours(hours, minutes, 0, 0);
+    if (reminderTime < now) {
+      // If the time has passed today, move to next week
+      reminderTime.setDate(reminderTime.getDate() + 7);
+    }
+  } else {
+    // Default: today or tomorrow
+    reminderTime = new Date();
+    reminderTime.setHours(hours, minutes, 0, 0);
+    if (reminderTime < now) {
+      reminderTime.setDate(reminderTime.getDate() + 1);
+    }
   }
   
   const reminder = {
@@ -2410,12 +2874,123 @@ function addReminder(text, hours, minutes){
     hours: hours,
     minutes: minutes,
     timestamp: reminderTime.getTime(),
-    completed: false
+    completed: false,
+    day: dayOffset ? reminderTime.toDateString() : null
   };
   
   reminders.push(reminder);
   saveRemindersToStorage();
   startReminderChecker();
+  
+  // Show reminder visualization
+  showReminderAdded(text, hours, minutes, dayOffset);
+}
+
+// Cancel/delete a specific reminder by time (hours, minutes, and optional day)
+function cancelReminder(hours, minutes, dayOffset = null){
+  const activeReminders = reminders.filter(r => !r.completed && r.type !== 'task');
+  
+  // Find reminders matching the time
+  let matchingReminders = activeReminders.filter(r => 
+    r.hours === hours && r.minutes === minutes
+  );
+  
+  // If day is specified, filter by day as well
+  if (dayOffset !== null && matchingReminders.length > 0) {
+    const targetDate = dayOffset instanceof Date ? dayOffset : new Date(dayOffset);
+    matchingReminders = matchingReminders.filter(r => {
+      if (!r.day) return false;
+      const reminderDate = new Date(r.timestamp);
+      return reminderDate.toDateString() === targetDate.toDateString();
+    });
+  }
+  
+  if (matchingReminders.length === 0) {
+    return false;
+  }
+  
+  // Mark as completed
+  matchingReminders.forEach(reminder => {
+    reminder.completed = true;
+  });
+  
+  saveRemindersToStorage();
+  const timeStr = formatTime12Hour(hours, minutes);
+  let cancelText = timeStr;
+  if (dayOffset) {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayName = dayNames[dayOffset.getDay()];
+    cancelText = `${dayName} at ${timeStr}`;
+  }
+  if (matchingReminders.length > 1) {
+    cancelText = `${matchingReminders.length} reminders at ${timeStr}`;
+  }
+  showReminderCancelled(cancelText);
+  return true;
+}
+
+// Delete all reminders
+function deleteAllReminders(){
+  const activeReminders = reminders.filter(r => !r.completed && r.type !== 'task');
+  const count = activeReminders.length;
+  
+  if (count === 0) {
+    return false;
+  }
+  
+  activeReminders.forEach(reminder => {
+    reminder.completed = true;
+  });
+  
+  saveRemindersToStorage();
+  showReminderCancelled(count + ' reminders');
+  return true;
+}
+
+// Show reminder added visualization
+function showReminderAdded(text, hours, minutes, dayOffset){
+  if (!reminderDisplayEl || !reminderTitleEl || !reminderTextEl || !reminderTimeEl) return;
+  
+  let timeStr = formatTime12Hour(hours, minutes);
+  if (dayOffset) {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayName = dayNames[dayOffset.getDay()];
+    timeStr = dayName + ' at ' + timeStr;
+  }
+  
+  reminderTitleEl.textContent = 'Reminder Created';
+  reminderTextEl.textContent = text;
+  reminderTimeEl.textContent = timeStr;
+  
+  reminderDisplayEl.removeAttribute('hidden');
+  
+  // Auto-hide after 3 seconds
+  setTimeout(() => {
+    hideReminderDisplay();
+  }, 3000);
+}
+
+// Show reminder cancelled visualization
+function showReminderCancelled(text){
+  if (!reminderDisplayEl || !reminderTitleEl || !reminderTextEl || !reminderTimeEl) return;
+  
+  reminderTitleEl.textContent = 'Reminder Deleted';
+  reminderTextEl.textContent = text.includes('reminders') ? text : `"${text}" deleted`;
+  reminderTimeEl.textContent = '✓';
+  
+  reminderDisplayEl.removeAttribute('hidden');
+  
+  // Auto-hide after 3 seconds
+  setTimeout(() => {
+    hideReminderDisplay();
+  }, 3000);
+}
+
+// Hide reminder display
+function hideReminderDisplay(){
+  if (reminderDisplayEl) {
+    reminderDisplayEl.setAttribute('hidden', '');
+  }
 }
 
 function addTask(text){
@@ -2435,22 +3010,43 @@ function listReminders(heard){
   const activeReminders = reminders.filter(r => !r.completed && r.type !== 'task');
   const tasks = reminders.filter(r => !r.completed && r.type === 'task');
   
+  // Show visualization
+  showRemindersList(activeReminders, tasks);
+  
   if (activeReminders.length === 0 && tasks.length === 0) {
-    deliverResponse(heard, 'You have no active reminders or tasks.');
+    deliverResponse(heard, 'No active reminders or tasks.');
     return;
   }
   
   let response = '';
   if (activeReminders.length > 0) {
-    response += `You have ${activeReminders.length} reminder${activeReminders.length > 1 ? 's' : ''}: `;
+    response += `${activeReminders.length} reminder${activeReminders.length > 1 ? 's' : ''}: `;
     activeReminders.forEach((r, i) => {
       const timeStr = formatTime12Hour(r.hours, r.minutes);
-      response += `${i + 1}. ${r.text} at ${timeStr}. `;
+      let dayStr = '';
+      if (r.day) {
+        const reminderDate = new Date(r.timestamp);
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        if (reminderDate.toDateString() === today.toDateString()) {
+          dayStr = 'Today';
+        } else if (reminderDate.toDateString() === tomorrow.toDateString()) {
+          dayStr = 'Tomorrow';
+        } else {
+          const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          dayStr = dayNames[reminderDate.getDay()];
+        }
+        response += `${i + 1}. ${r.text} ${dayStr} at ${timeStr}. `;
+      } else {
+        response += `${i + 1}. ${r.text} at ${timeStr}. `;
+      }
     });
   }
   
   if (tasks.length > 0) {
-    response += `You have ${tasks.length} task${tasks.length > 1 ? 's' : ''}: `;
+    response += `${tasks.length} task${tasks.length > 1 ? 's' : ''}: `;
     tasks.forEach((t, i) => {
       response += `${i + 1}. ${t.text}. `;
     });
@@ -2459,10 +3055,89 @@ function listReminders(heard){
   deliverResponse(heard, response);
 }
 
+// Show reminders list visualization
+function showRemindersList(activeReminders, tasks){
+  if (!remindersListDisplayEl || !remindersListContentEl) return;
+  
+  // Clear previous content
+  remindersListContentEl.innerHTML = '';
+  
+  // Add reminders
+  if (activeReminders.length > 0) {
+    activeReminders.forEach((reminder, index) => {
+      const item = document.createElement('div');
+      item.className = 'reminder-item';
+      
+      const timeStr = formatTime12Hour(reminder.hours, reminder.minutes);
+      let dayStr = '';
+      if (reminder.day) {
+        const reminderDate = new Date(reminder.timestamp);
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        if (reminderDate.toDateString() === today.toDateString()) {
+          dayStr = 'Today';
+        } else if (reminderDate.toDateString() === tomorrow.toDateString()) {
+          dayStr = 'Tomorrow';
+        } else {
+          const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          dayStr = dayNames[reminderDate.getDay()];
+        }
+      }
+      
+      const textEl = document.createElement('div');
+      textEl.className = 'reminder-item-text';
+      textEl.textContent = reminder.text;
+      
+      const timeEl = document.createElement('div');
+      timeEl.className = 'reminder-item-time';
+      
+      const numberEl = document.createElement('span');
+      numberEl.className = 'reminder-item-number';
+      numberEl.textContent = index + 1;
+      
+      const timeText = document.createElement('span');
+      timeText.textContent = dayStr ? `${dayStr} at ${timeStr}` : timeStr;
+      
+      timeEl.appendChild(numberEl);
+      timeEl.appendChild(timeText);
+      
+      item.appendChild(textEl);
+      item.appendChild(timeEl);
+      
+      remindersListContentEl.appendChild(item);
+    });
+  }
+  
+  // Add empty message if no reminders
+  if (activeReminders.length === 0 && tasks.length === 0) {
+    const emptyMsg = document.createElement('div');
+    emptyMsg.className = 'reminders-list-empty';
+    emptyMsg.textContent = 'No active reminders';
+    remindersListContentEl.appendChild(emptyMsg);
+  }
+  
+  // Show the display
+  remindersListDisplayEl.removeAttribute('hidden');
+  
+  // Auto-hide after 10 seconds
+  setTimeout(() => {
+    hideRemindersListDisplay();
+  }, 10000);
+}
+
+// Hide reminders list display
+function hideRemindersListDisplay(){
+  if (remindersListDisplayEl) {
+    remindersListDisplayEl.setAttribute('hidden', '');
+  }
+}
+
 function listTasks(heard){
   const tasks = reminders.filter(r => !r.completed && r.type === 'task');
   if (tasks.length === 0) {
-    deliverResponse(heard, 'You have no active tasks.');
+    deliverResponse(heard, 'No active tasks.');
     return;
   }
   
@@ -2533,6 +3208,7 @@ function deliverResponse(heard, responseText){
   // Use subtitle effect for longer responses (more than 50 chars)
   const useSubtitle = responseText.length > 50;
   showResponse(responseText, heard, useSubtitle);
+  // speakResponse already cancels previous speech, so this is safe
   speakResponse(responseText);
 }
 
@@ -2573,9 +3249,59 @@ async function handleCommandText(raw, text){
   const wordCount = keyText.split(' ').filter(Boolean).length;
 
   // Conversation context: Handle follow-up questions
+  // Handle "add another reminder" follow-up
+  if (conversationContext.contextActive && conversationContext.pendingAddAnotherReminder) {
+    const isYes = keyText === 'yes' || keyText === 'yeah' || keyText === 'yep' || keyText === 'ok' || keyText === 'okay' || keyText === 'sure' || keyText.includes('yes') || keyText.includes('go ahead');
+    const isNo = keyText === 'no' || keyText === 'nope' || keyText === 'nah' || keyText.includes('no') || keyText.includes('that\'s all') || keyText.includes('that is all');
+    
+    if (isNo) {
+      deliverResponse(raw, 'Reminders saved.');
+      conversationContext.pendingAddAnotherReminder = false;
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      resetWakeState();
+      return;
+    } else if (isYes) {
+      // Allow user to add another reminder - clear flag so their next reminder command is processed
+      conversationContext.pendingAddAnotherReminder = false;
+      deliverResponse(raw, 'Specify reminder details.');
+      activateContext();
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      return;
+    }
+    // If not yes/no, treat as a new reminder command and continue processing (they may have said the reminder directly)
+    conversationContext.pendingAddAnotherReminder = false;
+  }
+  
+  // Handle "show reminder list" follow-up after cancellation
+  if (conversationContext.contextActive && conversationContext.pendingShowReminderList) {
+    const isYes = keyText === 'yes' || keyText === 'yeah' || keyText === 'yep' || keyText === 'ok' || keyText === 'okay' || keyText === 'sure' || keyText.includes('yes') || keyText.includes('show');
+    const isNo = keyText === 'no' || keyText === 'nope' || keyText === 'nah' || keyText.includes('no');
+    
+    if (isYes) {
+      listReminders(raw);
+      conversationContext.pendingShowReminderList = false;
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      resetWakeState();
+      return;
+    } else if (isNo) {
+      deliverResponse(raw, 'Acknowledged.');
+      conversationContext.pendingShowReminderList = false;
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      resetWakeState();
+      return;
+    }
+  }
+  
   if (conversationContext.contextActive && conversationContext.lastCommandType === 'weather') {
+    console.log('[Follow-up] Context active, checking weather follow-up for:', keyText);
     // Follow-up questions about weather - be very flexible with detection
+    // Also include yes/no responses if we're waiting for forecast confirmation
     const isWeatherFollowUp = 
+      conversationContext.pendingForecastRequest || // Always check if waiting for yes/no
       keyText.includes('tomorrow') || 
       keyText.includes('forecast') || 
       keyText.includes('later') || 
@@ -2584,38 +3310,132 @@ async function handleCommandText(raw, text){
       keyText === 'and' || 
       keyText === 'what about' || 
       keyText === 'how about' ||
+      keyText === 'yes' ||
+      keyText === 'no' ||
       keyText.startsWith('and ') ||
       keyText.startsWith('what about') ||
       keyText.startsWith('how about') ||
       keyText.length <= 3; // Very short phrases are likely follow-ups
     
     if (isWeatherFollowUp) {
-      // Check for "tomorrow" or "forecast" requests
-      if (keyText.includes('tomorrow') || keyText.includes('forecast') || keyText.includes('later')) {
-        if (conversationContext.lastLocation) {
-          deliverResponse(raw, `I can check the forecast for ${conversationContext.lastLocation}, but I'll need to fetch that data. Would you like me to check?`);
-          activateContext(); // Keep context active for further follow-ups
+      console.log('[Follow-up] Detected weather follow-up');
+      
+      // Handle yes/no responses to forecast question
+      if (conversationContext.pendingForecastRequest) {
+        const isYes = keyText === 'yes' || keyText === 'yeah' || keyText === 'yep' || keyText === 'ok' || keyText === 'okay' || keyText === 'sure' || keyText.includes('yes') || keyText.includes('go ahead');
+        const isNo = keyText === 'no' || keyText === 'nope' || keyText === 'nah' || keyText.includes('no');
+        
+        if (isYes) {
+          // Fetch forecast for the location
+          if (conversationContext.lastLocation) {
+            deliverResponse(raw, `Retrieving forecast for ${conversationContext.lastLocation}.`);
+            // For now, just fetch current weather again (forecast API would need different endpoint)
+            respondWithWeather(conversationContext.lastLocation, raw).catch(err => {
+              console.warn('Forecast fetch failed:', err);
+              deliverResponse(raw, `Unable to retrieve forecast. Weather service unavailable.`);
+            });
+          }
+          conversationContext.pendingForecastRequest = false;
+          activateContext();
+          lastCommandHandledAt = Date.now();
+          lastCommandKey = keyText;
+          return;
+        } else if (isNo) {
+          deliverResponse(raw, 'Standing by for further instructions.');
+          conversationContext.pendingForecastRequest = false;
+          activateContext();
+          lastCommandHandledAt = Date.now();
+          lastCommandKey = keyText;
           return;
         }
       }
-      // Repeat last weather info
-      if (keyText.includes('again') || keyText.includes('repeat') || keyText.length <= 3) {
-        if (conversationContext.lastWeatherData && conversationContext.lastLocation) {
-          const current = conversationContext.lastWeatherData;
-          const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
-          const temp = current.temp_C;
-          const feels = current.FeelsLikeC || temp;
-          deliverResponse(raw, `Weather in ${conversationContext.lastLocation} is ${desc.toLowerCase()} at ${temp} degrees Celsius, feeling like ${feels}.`);
-          activateContext(); // Keep context active
+      
+      // Check for "tomorrow" or "forecast" requests
+      if (keyText.includes('tomorrow') || keyText.includes('forecast') || keyText.includes('later')) {
+        if (conversationContext.lastLocation) {
+          deliverResponse(raw, `Forecast data requires a fresh query for ${conversationContext.lastLocation}. Proceed?`);
+          conversationContext.pendingForecastRequest = true; // Mark that we're waiting for yes/no
+          activateContext(); // Keep context active for further follow-ups
+          lastCommandHandledAt = Date.now();
+          lastCommandKey = keyText;
           return;
         }
+      }
+      // Repeat last weather info or handle generic follow-ups (like "and", "what about", etc.)
+      if (conversationContext.lastWeatherData && conversationContext.lastLocation) {
+        const current = conversationContext.lastWeatherData;
+        const desc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : 'unknown conditions';
+        const temp = current.temp_C != null ? current.temp_C : 'unknown';
+        const feels = current.FeelsLikeC != null ? current.FeelsLikeC : temp;
+        
+        // Display weather visualization
+        displayWeatherData(conversationContext.lastLocation, current);
+        
+        deliverResponse(raw, `${conversationContext.lastLocation}: ${desc.toLowerCase()}, ${temp}°C. Feels like ${feels}°C.`);
+        activateContext(); // Keep context active
+        lastCommandHandledAt = Date.now();
+        lastCommandKey = keyText;
+        return;
       }
     }
   }
 
   // Conversation helper: user says "I have a question" to signal a new query
   if (keyText.startsWith('i have a question')){
-    deliverResponse(raw, 'What is your question?');
+    deliverResponse(raw, 'Proceed.');
+    return;
+  }
+
+  // Timer commands
+  if (keyText.includes('set timer') || keyText.includes('start timer') || keyText.includes('timer for')){
+    const timerMatch = keyText.match(/(?:set|start)?\s*timer\s*(?:for)?\s*(.+)/i);
+    if (timerMatch && timerMatch[1]){
+      const durationText = timerMatch[1].trim();
+      const seconds = parseTimerDuration(durationText);
+      if (seconds){
+        setTimer(seconds);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(seconds / 3600);
+        let durationStr = '';
+        if (hours > 0) {
+          durationStr = hours === 1 ? '1 hour' : `${hours} hours`;
+          const remainingMins = Math.floor((seconds % 3600) / 60);
+          if (remainingMins > 0) {
+            durationStr += ` and ${remainingMins} ${remainingMins === 1 ? 'minute' : 'minutes'}`;
+          }
+        } else {
+          durationStr = minutes === 1 ? '1 minute' : `${minutes} minutes`;
+        }
+        startTimer();
+        deliverResponse(raw, `Timer set for ${durationStr}. Running.`);
+      } else {
+        deliverResponse(raw, 'Duration format unrecognized. Use format: "set timer for 5 minutes" or "timer for 1 hour".');
+      }
+    } else {
+      deliverResponse(raw, 'Specify timer duration. Example: "set timer for 5 minutes".');
+    }
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    resetWakeState();
+    return;
+  }
+  
+  if (keyText.includes('stop timer') || keyText.includes('pause timer')){
+    stopTimer();
+      deliverResponse(raw, 'Timer paused.');
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    resetWakeState();
+    return;
+  }
+  
+  if (keyText.includes('reset timer') || keyText.includes('clear timer')){
+    hideTimerDisplay();
+    timerSeconds = 0;
+      deliverResponse(raw, 'Timer reset.');
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    resetWakeState();
     return;
   }
 
@@ -2655,13 +3475,13 @@ async function handleCommandText(raw, text){
     if (parsedTime){
       setAlarm(parsedTime.hours, parsedTime.minutes);
       const formattedTime = formatTime12Hour(parsedTime.hours, parsedTime.minutes);
-      deliverResponse(raw, `Alarm set for ${formattedTime}.`);
+      deliverResponse(raw, `Alarm configured for ${formattedTime}.`);
       lastCommandHandledAt = Date.now();
       lastCommandKey = keyText;
       resetWakeState();
       return;
     } else {
-      deliverResponse(raw, 'I could not understand that time. Please say something like "set alarm for 7:30 AM".');
+      deliverResponse(raw, 'Time format unrecognized. Use format: "set alarm for 7:30 AM".');
       lastCommandHandledAt = Date.now();
       lastCommandKey = keyText;
       resetWakeState();
@@ -2681,9 +3501,9 @@ async function handleCommandText(raw, text){
   if (keyText.includes('show commands') || keyText.includes('show command list') || keyText.includes('open commands')){
     if (window.openCommandList) {
       window.openCommandList();
-      deliverResponse(raw, 'Command list opened.');
+      deliverResponse(raw, 'Command list displayed.');
     } else {
-      deliverResponse(raw, 'Command list is available in the settings panel.');
+      deliverResponse(raw, 'Command list accessible via settings panel.');
     }
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
@@ -2694,7 +3514,7 @@ async function handleCommandText(raw, text){
   if (keyText.includes('close command list') || keyText.includes('close commands') || keyText.includes('hide command list')){
     if (window.closeCommandList) {
       window.closeCommandList();
-      deliverResponse(raw, 'Command list closed.');
+      deliverResponse(raw, 'Command list hidden.');
     }
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
@@ -2744,11 +3564,143 @@ async function handleCommandText(raw, text){
   ){
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
-    deliverResponse(raw, `Today is ${dateStr}.`);
+    deliverResponse(raw, `${dateStr}.`);
     lastCommandHandledAt = Date.now();
     lastCommandKey = keyText;
     resetWakeState();
     return;
+  }
+
+  // Reminder commands
+  if (keyText.includes('list reminders') || keyText.includes('show reminders') || keyText.includes('what are my reminders')){
+    listReminders(raw);
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    resetWakeState();
+    return;
+  }
+
+  // Parse "cancel reminder" or "delete all reminders" commands
+  if (keyText.includes('cancel reminder') || keyText.includes('delete reminder') || keyText.includes('remove reminder')){
+    // Try to extract time from the command (e.g., "cancel reminder at 3 PM" or "cancel reminder 3 PM")
+    const cancelMatch = keyText.match(/(?:cancel|delete|remove) reminder (?:at|for)? (.+)/);
+    if (cancelMatch && cancelMatch[1]){
+      const timeAndDayText = cancelMatch[1].trim();
+      
+      // Try to parse day first
+      const parsedDay = parseDay(timeAndDayText);
+      let timeText = timeAndDayText;
+      
+      // Remove day name from time text if day was found
+      if (parsedDay) {
+        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'today', 'tomorrow'];
+        for (const dayName of dayNames) {
+          timeText = timeText.replace(new RegExp(dayName, 'gi'), '').trim();
+        }
+      }
+      
+      const parsedTime = parseAlarmTime(timeText);
+      if (parsedTime){
+        if (cancelReminder(parsedTime.hours, parsedTime.minutes, parsedDay)){
+          let timeStr = formatTime12Hour(parsedTime.hours, parsedTime.minutes);
+          if (parsedDay) {
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            if (timeAndDayText.toLowerCase().includes('today')) {
+              timeStr = 'Today at ' + timeStr;
+            } else if (timeAndDayText.toLowerCase().includes('tomorrow')) {
+              timeStr = 'Tomorrow at ' + timeStr;
+            } else {
+              const dayName = dayNames[parsedDay.getDay()];
+              timeStr = dayName + ' at ' + timeStr;
+            }
+          }
+          deliverResponse(raw, `Reminder at ${timeStr} deleted. Display updated list?`);
+          conversationContext.lastCommandType = 'reminder';
+          conversationContext.pendingShowReminderList = true;
+          activateContext();
+        } else {
+          let timeStr = formatTime12Hour(parsedTime.hours, parsedTime.minutes);
+          if (parsedDay) {
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const dayName = dayNames[parsedDay.getDay()];
+            timeStr = dayName + ' at ' + timeStr;
+          }
+          deliverResponse(raw, `No active reminder found at ${timeStr}.`);
+        }
+      } else {
+        deliverResponse(raw, 'Time format unrecognized. Use format: "cancel reminder at 3 PM" or "cancel reminder Monday at 3 PM".');
+      }
+    } else {
+      deliverResponse(raw, 'Specify reminder time. Example: "cancel reminder at 3 PM" or "cancel reminder Monday at 3 PM".');
+    }
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    resetWakeState();
+    return;
+  }
+  
+  if (keyText.includes('delete all reminders') || keyText.includes('cancel all reminders') || keyText.includes('clear all reminders')){
+    if (deleteAllReminders()){
+      deliverResponse(raw, 'All reminders deleted. Display updated list?');
+      conversationContext.lastCommandType = 'reminder';
+      conversationContext.pendingShowReminderList = true;
+      activateContext();
+    } else {
+      deliverResponse(raw, 'No active reminders found.');
+      resetWakeState();
+    }
+    lastCommandHandledAt = Date.now();
+    lastCommandKey = keyText;
+    return;
+  }
+
+  // Parse "remind me to [task] at [time] [day]" command
+  const remindMatch = keyText.match(/remind me to (.+?) (?:at|for|on) (.+)/);
+  if (remindMatch && remindMatch[1] && remindMatch[2]){
+    const taskText = remindMatch[1].trim();
+    const timeAndDayText = remindMatch[2].trim();
+    
+    // Try to parse day first
+    const parsedDay = parseDay(timeAndDayText);
+    let timeText = timeAndDayText;
+    
+    // Remove day name from time text if day was found
+    if (parsedDay) {
+      const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'today', 'tomorrow'];
+      for (const dayName of dayNames) {
+        timeText = timeText.replace(new RegExp(dayName, 'gi'), '').trim();
+      }
+    }
+    
+    const parsedTime = parseAlarmTime(timeText);
+    if (parsedTime){
+      addReminder(taskText, parsedTime.hours, parsedTime.minutes, parsedDay);
+      let formattedTime = formatTime12Hour(parsedTime.hours, parsedTime.minutes);
+      if (parsedDay) {
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        if (timeAndDayText.toLowerCase().includes('today')) {
+          formattedTime = 'Today at ' + formattedTime;
+        } else if (timeAndDayText.toLowerCase().includes('tomorrow')) {
+          formattedTime = 'Tomorrow at ' + formattedTime;
+        } else {
+          const dayName = dayNames[parsedDay.getDay()];
+          formattedTime = dayName + ' at ' + formattedTime;
+        }
+      }
+      deliverResponse(raw, `Reminder created: ${taskText} at ${formattedTime}. Add another?`);
+      conversationContext.lastCommandType = 'reminder';
+      conversationContext.pendingAddAnotherReminder = true;
+      activateContext();
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      return;
+    } else {
+      deliverResponse(raw, 'Time format unrecognized. Use format: "remind me to call mom at 3 PM" or "remind me to call mom on Monday at 3 PM".');
+      lastCommandHandledAt = Date.now();
+      lastCommandKey = keyText;
+      resetWakeState();
+      return;
+    }
   }
 
   const weatherMatch = keyText.match(/weather(?:\s+(?:in|for))?\s+(.+)/);
@@ -2768,7 +3720,24 @@ async function handleCommandText(raw, text){
     console.log('[Commands] Ignoring short/noisy phrase:', keyText);
     return;
   }
-  deliverResponse(raw, `I can't understand that command.`);
+  
+  // Check if this might be echo from TTS - ignore common patterns from weather responses
+  const ttsEchoPatterns = [
+    'weather in',
+    'degrees celsius',
+    'feeling like',
+    'humidity',
+    'percent',
+    'one moment please',
+    'fetching weather'
+  ];
+  const mightBeEcho = ttsEchoPatterns.some(pattern => keyText.includes(pattern));
+  if (mightBeEcho) {
+    console.log('[Commands] Ignoring potential TTS echo:', keyText);
+    return;
+  }
+  
+  deliverResponse(raw, 'Command not recognized. Use "show commands" for available commands.');
   resetWakeState();
 }
 
@@ -2776,6 +3745,10 @@ function saveCustomCommands(){
   try{
     const data = JSON.stringify(customCommands);
     window.localStorage.setItem('avrilCustomCommands', data);
+    // Update command list if render function is available
+    if (window.renderCustomCommands) {
+      window.renderCustomCommands();
+    }
   }catch(e){
     console.warn('Failed to save custom commands:', e);
   }
@@ -2845,51 +3818,62 @@ function showResponse(message, heard, useSubtitle = true){
 function speakResponse(message){
   if (!('speechSynthesis' in window)) return;
   resetIdleTimer(); // Reset idle timer when Avril speaks
-  const utterance = new SpeechSynthesisUtterance(message);
-  utterance.lang = 'en-GB';
-  // Adjust pacing based on response length:
-  // - short confirmations a bit faster
-  // - long informational replies a bit slower
-  const len = message ? message.length : 0;
-  if (len <= 40){
-    utterance.rate = 1.1;
-  } else if (len >= 160){
-    utterance.rate = 0.9;
-  } else {
-    utterance.rate = 1;
-  }
-  utterance.pitch = 0.9;
-  utterance.volume = 1;
-  if (selectedVoice) utterance.voice = selectedVoice;
-  // ensure any previous speech is cancelled, then speak and mark busy
+  
+  // Always cancel any ongoing speech first to prevent duplicates
   window.speechSynthesis.cancel();
-
-  // While Avril is speaking, pause recognition so we don't hear our own TTS
-  if (speechRecognition && recognitionActive){
-    stopSpeechRecognition();
-    recognitionPausedForSpeech = true;
-  } else {
-    recognitionPausedForSpeech = false;
-  }
-
-  isSpeaking = true;
-  utterance.onend = () => {
-    isSpeaking = false;
-    if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
-      startSpeechRecognition(false); // Resume without chime
+  
+  // Small delay to ensure cancellation completes before speaking new message
+  setTimeout(() => {
+    const utterance = new SpeechSynthesisUtterance(message);
+    utterance.lang = 'en-GB';
+    // Adjust pacing based on response length:
+    // - short confirmations a bit faster
+    // - long informational replies a bit slower
+    const len = message ? message.length : 0;
+    if (len <= 40){
+      utterance.rate = 1.1;
+    } else if (len >= 160){
+      utterance.rate = 0.9;
+    } else {
+      utterance.rate = 1;
     }
-    micMutedForCommand = false;
-    recognitionPausedForSpeech = false;
-  };
-  utterance.onerror = () => {
-    isSpeaking = false;
-    if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
-      startSpeechRecognition(false); // Resume without chime
+    utterance.pitch = 0.9;
+    utterance.volume = 1;
+    if (selectedVoice) utterance.voice = selectedVoice;
+    
+    // While Avril is speaking, pause recognition so we don't hear our own TTS
+    if (speechRecognition && recognitionActive){
+      stopSpeechRecognition();
+      recognitionPausedForSpeech = true;
+    } else {
+      recognitionPausedForSpeech = false;
     }
-    micMutedForCommand = false;
-    recognitionPausedForSpeech = false;
-  };
-  window.speechSynthesis.speak(utterance);
+
+    isSpeaking = true;
+    utterance.onend = () => {
+      isSpeaking = false;
+      if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
+        // Add delay before resuming to avoid picking up TTS echo
+        setTimeout(() => {
+          startSpeechRecognition(false); // Resume without chime
+        }, 1500); // 1.5 second delay to allow echo to die down
+      }
+      micMutedForCommand = false;
+      recognitionPausedForSpeech = false;
+    };
+    utterance.onerror = () => {
+      isSpeaking = false;
+      if (micMode === 'stream' && (micMutedForCommand || recognitionPausedForSpeech)){
+        // Add delay before resuming to avoid picking up TTS echo
+        setTimeout(() => {
+          startSpeechRecognition(false); // Resume without chime
+        }, 1500);
+      }
+      micMutedForCommand = false;
+      recognitionPausedForSpeech = false;
+    };
+    window.speechSynthesis.speak(utterance);
+  }, 100);
 }
 
 function setWakeState(active){
@@ -2914,11 +3898,22 @@ async function acknowledgeWake(heard){
    // Chime to confirm wake phrase was recognised
   playStartChime();
 
-  const msg = 'What is your command?';
+  const msg = 'Standing by.';
   speakResponse(msg);
 }
 
 function resetWakeState(){
+  // Don't reset session if context is active - allows follow-up questions without wake phrase
+  if (conversationContext.contextActive) {
+    // Keep session active for follow-ups, but reset wake-specific flags
+    setWakeState(false);
+    expectImmediateCommand = false;
+    // Ensure sessionActive is true so follow-ups work
+    sessionActive = true;
+    // Don't play stop chime - session is still active
+    return;
+  }
+  
   setWakeState(false);
   sessionActive = false;
   expectImmediateCommand = false;

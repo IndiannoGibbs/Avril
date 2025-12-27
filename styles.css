@@ -4,6 +4,9 @@ html,body{
   background: radial-gradient(ellipse at center, #000033 0%, #1a0033 35%, #000 100%);
   font-family: 'Segoe UI', Roboto, Arial, system-ui;
   color:#e6f0ff;
+  overflow-x:hidden; /* Prevent horizontal scroll on mobile */
+  -webkit-text-size-adjust:100%; /* Prevent text size adjustment on iOS */
+  -webkit-touch-callout:none; /* Disable callout on long press for mobile */
 }
 /* App frame centers a portrait card like the mock */
 .app-frame{
@@ -53,6 +56,7 @@ html,body{
     radial-gradient(600px 300px at 50% 5%, rgba(0, 102, 255, 0.12), transparent 25%),
     linear-gradient(180deg, rgba(26, 0, 51, 0.6), rgba(0,0,0,0.85));
   transition:width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  touch-action:pan-y; /* Allow vertical scrolling, prevent horizontal */
 }
 
 /* subtle hex background pattern */
@@ -123,6 +127,527 @@ html,body{
   text-align:center;
   line-height:1.4;
   word-wrap:break-word;
+}
+
+/* Weather Display */
+.weather-display{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%) scale(0.8);
+  z-index:20;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.weather-display:not([hidden]){
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%, -50%) scale(1);
+  animation:weatherSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes weatherSlideIn{
+  from{
+    opacity:0;
+    transform:translate(-50%, -50%) scale(0.8) translateY(-20px);
+  }
+  to{
+    opacity:1;
+    transform:translate(-50%, -50%) scale(1) translateY(0);
+  }
+}
+
+.weather-card{
+  background:linear-gradient(135deg, rgba(0, 20, 40, 0.95), rgba(0, 10, 30, 0.95));
+  border:2px solid rgba(0, 102, 255, 0.4);
+  border-radius:20px;
+  padding:24px;
+  min-width:280px;
+  max-width:320px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 102, 255, 0.3);
+  backdrop-filter:blur(10px);
+}
+
+.weather-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:16px;
+  padding-bottom:12px;
+  border-bottom:1px solid rgba(0, 102, 255, 0.2);
+}
+
+.weather-location{
+  font-size:18px;
+  font-weight:600;
+  color:#66b3ff;
+  text-transform:capitalize;
+  letter-spacing:0.5px;
+}
+
+.weather-close{
+  background:none;
+  border:none;
+  color:#66b3ff;
+  font-size:28px;
+  line-height:1;
+  cursor:pointer;
+  padding:0;
+  width:32px;
+  height:32px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  transition:all 0.2s ease;
+  opacity:0.7;
+}
+
+.weather-close:hover{
+  opacity:1;
+  background:rgba(0, 102, 255, 0.2);
+  transform:scale(1.1);
+}
+
+.weather-main{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  margin-bottom:20px;
+}
+
+.weather-icon{
+  font-size:64px;
+  margin-bottom:8px;
+  filter:drop-shadow(0 0 20px rgba(102, 179, 255, 0.5));
+}
+
+.weather-temp{
+  display:flex;
+  align-items:baseline;
+  margin-bottom:8px;
+}
+
+.weather-temp-value{
+  font-size:48px;
+  font-weight:700;
+  color:#ffffff;
+  line-height:1;
+}
+
+.weather-temp-unit{
+  font-size:24px;
+  color:rgba(255, 255, 255, 0.7);
+  margin-left:4px;
+}
+
+.weather-condition{
+  font-size:16px;
+  color:rgba(255, 255, 255, 0.9);
+  text-transform:capitalize;
+  text-align:center;
+}
+
+.weather-details{
+  display:flex;
+  justify-content:space-around;
+  gap:16px;
+  padding-top:16px;
+  border-top:1px solid rgba(0, 102, 255, 0.2);
+}
+
+.weather-detail{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:4px;
+}
+
+.weather-detail-label{
+  font-size:11px;
+  color:rgba(102, 179, 255, 0.7);
+  text-transform:uppercase;
+  letter-spacing:1px;
+}
+
+.weather-detail-value{
+  font-size:16px;
+  font-weight:600;
+  color:#66b3ff;
+}
+
+/* Reminder Display */
+.reminder-display{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%) scale(0.8);
+  z-index:20;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.reminder-display:not([hidden]){
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%, -50%) scale(1);
+  animation:reminderSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes reminderSlideIn{
+  from{
+    opacity:0;
+    transform:translate(-50%, -50%) scale(0.8) translateY(-20px);
+  }
+  to{
+    opacity:1;
+    transform:translate(-50%, -50%) scale(1) translateY(0);
+  }
+}
+
+.reminder-card{
+  background:linear-gradient(135deg, rgba(0, 20, 40, 0.95), rgba(0, 10, 30, 0.95));
+  border:2px solid rgba(0, 102, 255, 0.4);
+  border-radius:20px;
+  padding:24px;
+  min-width:280px;
+  max-width:320px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 102, 255, 0.3);
+  backdrop-filter:blur(10px);
+}
+
+.reminder-header{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:16px;
+  padding-bottom:12px;
+  border-bottom:1px solid rgba(0, 102, 255, 0.2);
+}
+
+.reminder-icon{
+  font-size:24px;
+  filter:drop-shadow(0 0 10px rgba(102, 179, 255, 0.5));
+}
+
+.reminder-title{
+  font-size:18px;
+  font-weight:600;
+  color:#66b3ff;
+  flex:1;
+  text-transform:uppercase;
+  letter-spacing:1px;
+}
+
+.reminder-close{
+  background:none;
+  border:none;
+  color:#66b3ff;
+  font-size:28px;
+  line-height:1;
+  cursor:pointer;
+  padding:0;
+  width:32px;
+  height:32px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  transition:all 0.2s ease;
+  opacity:0.7;
+}
+
+.reminder-close:hover{
+  opacity:1;
+  background:rgba(0, 102, 255, 0.2);
+  transform:scale(1.1);
+}
+
+.reminder-content{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+
+.reminder-text{
+  font-size:16px;
+  color:#ffffff;
+  line-height:1.4;
+  text-align:center;
+  word-wrap:break-word;
+}
+
+.reminder-time{
+  font-size:20px;
+  font-weight:600;
+  color:#66b3ff;
+  text-align:center;
+  padding:8px;
+  background:rgba(0, 102, 255, 0.1);
+  border-radius:8px;
+}
+
+/* Reminders List Display */
+.reminders-list-display{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%) scale(0.8);
+  z-index:20;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.reminders-list-display:not([hidden]){
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%, -50%) scale(1);
+  animation:remindersListSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes remindersListSlideIn{
+  from{
+    opacity:0;
+    transform:translate(-50%, -50%) scale(0.8) translateY(-20px);
+  }
+  to{
+    opacity:1;
+    transform:translate(-50%, -50%) scale(1) translateY(0);
+  }
+}
+
+.reminders-list-card{
+  background:linear-gradient(135deg, rgba(0, 20, 40, 0.95), rgba(0, 10, 30, 0.95));
+  border:2px solid rgba(0, 102, 255, 0.4);
+  border-radius:20px;
+  padding:24px;
+  min-width:320px;
+  max-width:400px;
+  max-height:70vh;
+  overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 102, 255, 0.3);
+  backdrop-filter:blur(10px);
+}
+
+.reminders-list-header{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:20px;
+  padding-bottom:12px;
+  border-bottom:1px solid rgba(0, 102, 255, 0.2);
+  position:sticky;
+  top:0;
+  background:linear-gradient(135deg, rgba(0, 20, 40, 0.98), rgba(0, 10, 30, 0.98));
+  z-index:1;
+}
+
+.reminders-list-icon{
+  font-size:24px;
+  filter:drop-shadow(0 0 10px rgba(102, 179, 255, 0.5));
+}
+
+.reminders-list-title{
+  font-size:18px;
+  font-weight:600;
+  color:#66b3ff;
+  flex:1;
+  text-transform:uppercase;
+  letter-spacing:1px;
+}
+
+.reminders-list-close{
+  background:none;
+  border:none;
+  color:#66b3ff;
+  font-size:28px;
+  line-height:1;
+  cursor:pointer;
+  padding:0;
+  width:32px;
+  height:32px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  transition:all 0.2s ease;
+  opacity:0.7;
+}
+
+.reminders-list-close:hover{
+  opacity:1;
+  background:rgba(0, 102, 255, 0.2);
+  transform:scale(1.1);
+}
+
+.reminders-list-content{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+
+.reminder-item{
+  background:rgba(0, 102, 255, 0.05);
+  border:1px solid rgba(0, 102, 255, 0.2);
+  border-radius:12px;
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.reminder-item-text{
+  font-size:16px;
+  color:#ffffff;
+  line-height:1.4;
+  word-wrap:break-word;
+}
+
+.reminder-item-time{
+  font-size:14px;
+  font-weight:600;
+  color:#66b3ff;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.reminder-item-number{
+  background:rgba(0, 102, 255, 0.2);
+  color:#66b3ff;
+  width:24px;
+  height:24px;
+  border-radius:50%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:12px;
+  font-weight:700;
+  flex-shrink:0;
+}
+
+.reminders-list-empty{
+  text-align:center;
+  color:rgba(255, 255, 255, 0.6);
+  font-size:16px;
+  padding:40px 20px;
+}
+
+/* Timer Display */
+.timer-display{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%) scale(0.8);
+  z-index:20;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.timer-display:not([hidden]){
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%, -50%) scale(1);
+  animation:timerSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes timerSlideIn{
+  from{
+    opacity:0;
+    transform:translate(-50%, -50%) scale(0.8) translateY(-20px);
+  }
+  to{
+    opacity:1;
+    transform:translate(-50%, -50%) scale(1) translateY(0);
+  }
+}
+
+.timer-card{
+  background:linear-gradient(135deg, rgba(0, 20, 40, 0.95), rgba(0, 10, 30, 0.95));
+  border:2px solid rgba(0, 102, 255, 0.4);
+  border-radius:20px;
+  padding:24px;
+  min-width:280px;
+  max-width:320px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 102, 255, 0.3);
+  backdrop-filter:blur(10px);
+}
+
+.timer-header{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:20px;
+  padding-bottom:12px;
+  border-bottom:1px solid rgba(0, 102, 255, 0.2);
+}
+
+.timer-icon{
+  font-size:24px;
+  filter:drop-shadow(0 0 10px rgba(102, 179, 255, 0.5));
+}
+
+.timer-title{
+  font-size:18px;
+  font-weight:600;
+  color:#66b3ff;
+  flex:1;
+  text-transform:uppercase;
+  letter-spacing:1px;
+}
+
+.timer-close{
+  background:none;
+  border:none;
+  color:#66b3ff;
+  font-size:28px;
+  line-height:1;
+  cursor:pointer;
+  padding:0;
+  width:32px;
+  height:32px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  transition:all 0.2s ease;
+  opacity:0.7;
+}
+
+.timer-close:hover{
+  opacity:1;
+  background:rgba(0, 102, 255, 0.2);
+  transform:scale(1.1);
+}
+
+.timer-content{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:16px;
+}
+
+.timer-time{
+  font-size:56px;
+  font-weight:700;
+  color:#ffffff;
+  font-family:'Orbitron', monospace;
+  text-shadow:0 0 20px rgba(0, 102, 255, 0.5);
+  letter-spacing:2px;
+  line-height:1;
+}
+
+.timer-status{
+  font-size:14px;
+  font-weight:600;
+  color:#66b3ff;
+  text-transform:uppercase;
+  letter-spacing:2px;
 }
 
 .voice-bars{
@@ -355,6 +880,10 @@ html,body{
   display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:24px;border:none;cursor:pointer;
   background: linear-gradient(90deg, rgba(0, 102, 255, 0.8), rgba(255, 0, 255, 0.6));
   color:#ffffff;box-shadow:0 6px 18px rgba(0, 102, 255, 0.3);transition:all 200ms ease;
+  touch-action:manipulation; /* Prevent double-tap zoom on mobile */
+  -webkit-tap-highlight-color:transparent; /* Remove tap highlight on mobile */
+  min-height:44px; /* Ensure touch target is at least 44px for mobile */
+  min-width:44px;
 }
 #startBtn svg{display:block;width:20px;height:20px;color:#ffffff;transition:transform 200ms ease, color 200ms ease;}
 #startBtn .mic-label{font-size:13px;font-weight:600;color:#ffffff}
@@ -385,6 +914,9 @@ html,body{
   background:linear-gradient(90deg, rgba(0, 102, 255, 0.8), rgba(255, 0, 255, 0.6));
   box-shadow:0 6px 18px rgba(0, 102, 255, 0.3);
   transition:transform 200ms ease, box-shadow 200ms ease;
+  touch-action:manipulation; /* Prevent double-tap zoom on mobile */
+  -webkit-tap-highlight-color:transparent; /* Remove tap highlight on mobile */
+  min-height:44px; /* Ensure touch target is at least 44px for mobile */
 }
 
 .settings-btn:hover{
@@ -789,6 +1321,8 @@ html,body{
 
   .viewport{
     border-radius:14px;
+    min-width:0; /* Allow viewport to shrink on very small screens */
+    width:100%;
   }
 
   #orbWrap{
@@ -815,6 +1349,12 @@ html,body{
     left:50%;
     transform:translateX(-50%);
     justify-content:space-between;
+    padding:8px 12px; /* Ensure padding for touch targets */
+  }
+  
+  #startBtn, .settings-btn{
+    min-height:44px; /* Minimum touch target size for mobile */
+    padding:10px 14px; /* Adequate padding for touch */
   }
 
   .sleep-clock .clock-time{
@@ -824,5 +1364,41 @@ html,body{
   .clock-date{
     font-size:16px;
     letter-spacing:2.5px;
+  }
+  
+  /* Improve touch targets for all interactive elements */
+  button, .keyboard-key, input, select, textarea{
+    touch-action:manipulation;
+    -webkit-tap-highlight-color:rgba(0, 102, 255, 0.2);
+    min-height:44px; /* Minimum touch target size */
+  }
+  
+  .close-settings-btn{
+    min-width:44px;
+    min-height:44px;
+  }
+  
+  /* Weather display mobile adjustments */
+  .weather-card{
+    min-width:260px;
+    max-width:300px;
+    padding:20px;
+  }
+  
+  .weather-icon{
+    font-size:56px;
+  }
+  
+  .weather-temp-value{
+    font-size:42px;
+  }
+  
+  .weather-location{
+    font-size:16px;
+  }
+  
+  .weather-close{
+    min-width:44px;
+    min-height:44px;
   }
 }
